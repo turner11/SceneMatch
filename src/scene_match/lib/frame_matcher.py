@@ -1,6 +1,9 @@
 """
 Frame Matcher module for finding similar frames between two drone videos.
 """
+import itertools
+import statistics
+from collections import defaultdict
 from pathlib import Path
 
 import cv2
@@ -20,6 +23,7 @@ class FrameMetadata:
     frame_index: int
     timestamp: float
     keypoints: tuple[cv2.KeyPoint, ...]
+    features: np.array
 
 
 @dataclass
@@ -28,11 +32,12 @@ class FrameMatch:
     frame: FrameMetadata
     frame_reference: FrameMetadata
     distance_score: float
+    notes: str = ''
 
 
 class FrameMatcher:
     def __init__(self, video_path: str | Path, sample_interval: int = 10, visualize: bool = False,
-                 video_id="reference", nfeatures=200):
+                 video_id="reference", n_features=500):
         """
         Initialize the Frame Matcher.
 
@@ -43,16 +48,18 @@ class FrameMatcher:
         self.sample_interval = sample_interval
         self.index: faiss.IndexFlatL2 | None = None
 
-        self.frame_metadata = []
         self.visualize = visualize
         self.visualizer = Visualizer() if visualize else None
         self.video_path = Path(video_path)
         self.video_id = video_id
+        self.n_features = n_features
+        self.frame_metadata_by_frame_index = {}
+        self.frame_data_by_frame_index = []
         # noinspection PyUnresolvedReferences
-        self.sift = cv2.SIFT_create(nfeatures=nfeatures)
+        self.sift = cv2.SIFT_create(nfeatures=n_features)
         logger.info(f"Initialized FrameMatcher with sample_interval={sample_interval}, visualize={visualize}")
 
-    def extract_features(self, frame: np.ndarray) -> tuple[np.ndarray, list[cv2.KeyPoint]]:
+    def extract_features(self, frame: np.ndarray) -> tuple[np.ndarray, tuple[cv2.KeyPoint, ...]]:
         """
         Extract features from a frame using SIFT.
 
@@ -73,10 +80,10 @@ class FrameMatcher:
 
         if descriptors is None:
             logger.warning("No SIFT descriptors found in frame")
-            return np.zeros((1, 128), dtype=np.float32), []
+            return np.zeros((1, 128), dtype=np.float32), tuple()
 
         # If we have multiple descriptors, take the mean
-        return np.mean(descriptors, axis=0).reshape(1, -1).astype(np.float32), keypoints
+        return descriptors.astype(np.float32), keypoints
 
     def build_index(self) -> None:
         """
@@ -90,13 +97,13 @@ class FrameMatcher:
             logger.error(error_msg)
             raise ValueError(error_msg)
 
-        index, sample_interval = -1, self.sample_interval
-        features_list = []
-
+        frame_index, sample_interval = -1, self.sample_interval
+        frame_metadata_by_frame_index = {}
+        self.frame_metadata_by_frame_index.clear()
         try:
             while True:
-                index += 1
-                if index % sample_interval == 0:
+                frame_index += 1
+                if frame_index % sample_interval == 0:
                     ret, frame = cap.read()
                 else:
                     frame = None
@@ -109,17 +116,16 @@ class FrameMatcher:
                     continue
 
                 features, keypoints = self.extract_features(frame)
-                features_list.append(features)
-
                 # Store metadata
                 timestamp = cap.get(cv2.CAP_PROP_POS_MSEC) / 1000.0  # Convert to seconds
 
-                self.frame_metadata.append(FrameMetadata(
+                frame_metadata_by_frame_index[frame_index] = FrameMetadata(
                     video_id=video_id,
-                    frame_index=index,
+                    frame_index=frame_index,
                     timestamp=timestamp,
                     keypoints=tuple(keypoints),
-                ))
+                    features=features,
+                )
 
                 # Show visualization if enabled
                 if self.visualize:
@@ -135,16 +141,25 @@ class FrameMatcher:
                 self.visualizer.close()
 
         # Build FAISS index
-        if features_list:
-            features_array = np.vstack(features_list)
+        if frame_metadata_by_frame_index:
+            self.frame_metadata_by_frame_index.update(frame_metadata_by_frame_index)
+
+            tpls = sorted(frame_metadata_by_frame_index.items(), key=lambda t: t[0])
+            frames_meta: list[FrameMetadata] = [t[1] for t in tpls]
+            descriptor_to_frame_index = list(
+                itertools.chain.from_iterable([m.frame_index] * len(m.features) for m in frames_meta))
+
+            all_descriptors = [m.features for m in frames_meta]
+            features_array = np.vstack(all_descriptors).astype(np.float32)
             dimension = features_array.shape[1]
 
             # Initialize FAISS index
             self.index = faiss.IndexFlatL2(dimension)
             # noinspection PyArgumentList
             self.index.add(features_array, )
+            self.frame_data_by_frame_index[:] = descriptor_to_frame_index
 
-            logger.info(f"Successfully built index with {len(features_list)} frames from video {video_id}")
+            logger.info(f"Successfully built index with {len(all_descriptors)} frames from video {video_id}")
         else:
             error_msg = "No frames were processed from the video"
             logger.error(error_msg)
@@ -198,40 +213,55 @@ class FrameMatcher:
 
                 # Search for nearest neighbors
                 distances, indices = self.index.search(features, k)
-                matches_and_distances = list(zip(indices[0], distances[0]))
+                desc_to_idx = self.frame_data_by_frame_index
 
                 # Create match objects
-                for i in range(k):
-                    match_index, distance = matches_and_distances[i]
-                    if match_index != -1:  # Valid match found
 
-                        frame_meta = FrameMetadata(
-                            video_id=video_id,
-                            frame_index=frame_index,
-                            timestamp=timestamp,
-                            keypoints=tuple(keypoints),
-                        )
-                        reference_match: FrameMetadata = self.frame_metadata[match_index]
+                distance_threshold = float('inf')
+                image_votes = defaultdict(list)
+                for dists, desc_idxs in zip(distances, indices):
+                    for dist, desc_idx in zip(dists, desc_idxs):
+                        if desc_idx != -1 and dist < distance_threshold:
+                            match_index = desc_to_idx[desc_idx]
+                            image_votes[match_index].append(dist)
 
-                        match = FrameMatch(
-                            frame=frame_meta,
-                            frame_reference=reference_match,
-                            distance_score=float(distance)
-                        )
-                        matches.append(match)
-                        logger.debug(f"Found match: Frame {frame_index} -> Frame {match.frame_reference.frame_index} "
-                                     f"(score: {match.distance_score:.4f})")
+                # Majority vote
+                tpl = max(image_votes.items(), key=lambda t: len(t[1]))
+                match_index, distances = tpl
 
-                        # Show visualization if enabled
-                        if self.visualize and i == 0:
-                            # Get the matched frame from the indexed video
-                            cap_ref.set(cv2.CAP_PROP_POS_FRAMES, match.frame_reference.frame_index)
-                            ret_ref, frame_ref = cap_ref.read()
-                            if ret_ref:
-                                # Create matches for visualization
-                                vis_matches = tuple()
-                                self.visualizer.show_matches(frame, frame_ref, frame_meta.keypoints,
-                                                             reference_match.keypoints, vis_matches)
+                total_vectors = len(distances)
+                votes = len(distances)
+
+                if match_index != -1:  # Valid match found
+                    frame_meta = FrameMetadata(
+                        video_id=video_id,
+                        frame_index=frame_index,
+                        timestamp=timestamp,
+                        keypoints=tuple(keypoints),
+                        features=features,
+                    )
+                    reference_match: FrameMetadata = self.frame_metadata_by_frame_index[match_index]
+
+                    match = FrameMatch(
+                        frame=frame_meta,
+                        frame_reference=reference_match,
+                        distance_score=float(statistics.median(distances)),
+                        notes=f'{votes} votes / {total_vectors} vectors ({votes * 100 / float(total_vectors)}%)',
+                    )
+                    matches.append(match)
+                    logger.debug(f"Found match: Frame {frame_index} -> Frame {match.frame_reference.frame_index} "
+                                 f"(score: {match.distance_score:.4f})")
+
+                    # Show visualization if enabled
+                    if self.visualize:
+                        # Get the matched frame from the indexed video
+                        cap_ref.set(cv2.CAP_PROP_POS_FRAMES, match.frame_reference.frame_index)
+                        ret_ref, frame_ref = cap_ref.read()
+                        if ret_ref:
+                            # Create matches for visualization
+                            vis_matches = tuple()
+                            self.visualizer.show_matches(frame, frame_ref, frame_meta.keypoints,
+                                                         reference_match.keypoints, vis_matches)
 
 
 
