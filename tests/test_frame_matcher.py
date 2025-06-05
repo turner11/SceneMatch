@@ -77,14 +77,14 @@ def matcher(test_video_reference):
 def test_frame_matcher_initialization(matcher_no_index):
     """Test FrameMatcher initialization."""
     assert matcher_no_index.index is None
-    assert len(matcher_no_index.frame_metadata) == 0
+    assert len(matcher_no_index.frame_metadata_by_frame_index) == 0
 
 
 def test_build_index(matcher):
     """Test building the index from a video."""
     matcher.build_index()
     assert matcher.index is not None
-    assert len(matcher.frame_metadata) > 0
+    assert len(matcher.frame_metadata_by_frame_index) > 0
 
 
 def test_find_matches(matcher, test_video):
@@ -115,6 +115,7 @@ def test_match_with_self(matcher):
     assert len(matches) > 0
     for match in matches:
         assert match.frame.video_id == matcher.video_id, "Frame video ID should match matcher video ID"
-        assert match.frame_reference.video_id == matcher.video_id, "Reference frame video ID should match matcher video ID"
+        assert match.frame_reference.video_id == matcher.video_id, "frame video ID should match matcher video ID"
         assert match.distance_score == 0.0, "Distance score should be zero when matching with itself"
-        assert match.frame.frame_index == match.frame_reference.frame_index, "Frame index should match reference frame index when matching with itself"
+        assert match.frame.frame_index == match.frame_reference.frame_index, \
+            "Frame index should match reference frame index when matching with itself"

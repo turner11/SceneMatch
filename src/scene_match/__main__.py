@@ -79,19 +79,21 @@ def analyze(reference_video: Path, comparison_video: Path, sample_interval: int,
 
             # Display results
             table = Table(title="Matching Results")
-            table.add_column("Reference Frame", justify="right", style="cyan")
-            table.add_column("Reference Time", justify="right", style="cyan")
             table.add_column("Comparison Frame", justify="right", style="green")
             table.add_column("Comparison Time", justify="right", style="green")
+            table.add_column("Reference Frame", justify="right", style="cyan")
+            table.add_column("Reference Time", justify="right", style="cyan")
             table.add_column("Distance Score", justify="right", style="yellow")
+            table.add_column("Notes", justify="left", style="yellow")
 
             for match in matches:
                 table.add_row(
-                    str(match.frame_reference.frame_index),
-                    f"{match.frame_reference.timestamp:.2f}s",
                     str(match.frame.frame_index),
                     f"{match.frame.timestamp:.2f}s",
-                    f"{match.distance_score:.4f}"
+                    str(match.frame_reference.frame_index),
+                    f"{match.frame_reference.timestamp:.2f}s",
+                    f"{match.distance_score:.4f}",
+                    f"{match.notes}"
                 )
 
             console.print(Panel.fit(
