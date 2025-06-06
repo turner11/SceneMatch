@@ -9,30 +9,12 @@ from pathlib import Path
 import cv2
 import numpy as np
 import faiss
-from dataclasses import dataclass
 import logging
+
+from .match_types import FrameMetadata, FrameMatch
 from .visualizer import Visualizer
 
 logger = logging.getLogger(__name__)
-
-
-@dataclass
-class FrameMetadata:
-    """Metadata for a video frame."""
-    video_id: str
-    frame_index: int
-    timestamp: float
-    keypoints: tuple[cv2.KeyPoint, ...]
-    features: np.array
-
-
-@dataclass
-class FrameMatch:
-    """Represents a match between two frames."""
-    frame: FrameMetadata
-    frame_reference: FrameMetadata
-    distance_score: float
-    notes: str = ''
 
 
 class FrameMatcher:
@@ -64,7 +46,7 @@ class FrameMatcher:
         Extract features from a frame using SIFT.
 
         Args:
-            frame: Input frame as numpy array
+            frame: Input frame as numpy-array
 
         Returns:
             Tuple of (feature vector, keypoints)
@@ -212,11 +194,11 @@ class FrameMatcher:
                 timestamp = cap.get(cv2.CAP_PROP_POS_MSEC) / 1000.0
 
                 # Search for nearest neighbors
+                # noinspection PyArgumentList
                 distances, indices = self.index.search(features, k)
                 desc_to_idx = self.frame_data_by_frame_index
 
                 # Create match objects
-
                 distance_threshold = float('inf')
                 image_votes = defaultdict(list)
                 for dists, desc_idxs in zip(distances, indices):
@@ -259,9 +241,7 @@ class FrameMatcher:
                         ret_ref, frame_ref = cap_ref.read()
                         if ret_ref:
                             # Create matches for visualization
-                            vis_matches = tuple()
-                            self.visualizer.show_matches(frame, frame_ref, frame_meta.keypoints,
-                                                         reference_match.keypoints, vis_matches)
+                            self.visualizer.show_matches(frame, frame_ref, match)
 
 
 

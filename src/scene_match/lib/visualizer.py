@@ -5,6 +5,8 @@ import cv2
 import numpy as np
 import logging
 
+from scene_match.lib.match_types import FrameMatch, FrameMetadata
+
 logger = logging.getLogger(__name__)
 
 
@@ -51,7 +53,7 @@ class Visualizer:
 
         return vis_frame
 
-    def show_frame(self, frame: np.ndarray, keypoints: tuple[cv2.KeyPoint,...] = None, wait_time: int = 1) -> None:
+    def show_frame(self, frame: np.ndarray, keypoints: tuple[cv2.KeyPoint, ...] = None, wait_time: int = 1) -> None:
         """
         Display a frame with optional keypoints.
         
@@ -71,46 +73,41 @@ class Visualizer:
             cv2.destroyAllWindows()
             raise KeyboardInterrupt("Visualization stopped by user")
 
-
-
-    def show_matches(self, frame1: np.ndarray, frame2: np.ndarray,
-                     keypoints: tuple[cv2.KeyPoint, ...], keypoints_ref: tuple[cv2.KeyPoint, ...],
-                     matches: tuple[cv2.DMatch], wait_time: int = 1) -> None:
+    def show_matches(self, frame: np.ndarray, frame_reference: np.ndarray, matches: FrameMatch,
+                     draw_descriptors=False, wait_time: int = 1) -> None:
         """
         Display two frames side by side with matching keypoints.
         
         Args:
-            frame1: First frame
-            frame2: Second frame
-            keypoints: Keypoints in first frame
-            keypoints_ref: Keypoints in second frame
-            matches: List of matches between keypoints
+            frame: First frame to display
+            frame_reference: Second frame to display
+            matches: List of FrameMatch objects containing keypoints and matches
+            draw_descriptors: Whether to draw keypoints on the frames
             wait_time: Time to wait for key press (ms)
         """
+
+        frame_data: FrameMetadata = matches.frame
+        frame_ref_data: FrameMetadata = matches.frame_reference
         # Draw keypoints on both frames
-        vis_a = self.draw_keypoints(frame1, keypoints, (0, 255, 0))
-        vis_b = self.draw_keypoints(frame2, keypoints_ref, (255, 0, 0))
+        if draw_descriptors:
+            img = self.draw_keypoints(frame, frame_data.keypoints, (0, 255, 0))
+            img_ref = self.draw_keypoints(frame_reference, frame_ref_data.keypoints, (255, 0, 0))
+        else:
+            img, img_ref = frame.copy(), frame_reference.copy()
 
-        # Create side-by-side visualization
-        h1, w1 = vis_a.shape[:2]
-        h2, w2 = vis_b.shape[:2]
-
-        # Create a canvas for both images
-        vis = np.zeros((max(h1, h2), w1 + w2, 3), dtype=np.uint8)
-        vis[:h1, :w1] = vis_a
-        vis[:h2, w1:w1 + w2] = vis_b
-
+        bf = cv2.BFMatcher(cv2.NORM_L1, crossCheck=True)
         # Draw lines between matching keypoints
-        matches = [m for m in matches if m.queryIdx and m.trainIdx]
-        for match in matches:
-            pt1 = tuple(map(int, keypoints[match.queryIdx].pt))
-            pt2 = tuple(map(int, keypoints_ref[match.trainIdx].pt))
-            pt2 = (pt2[0] + w1, pt2[1])  # Adjust x coordinate for second image
+        features_matches = bf.match(frame_data.features, frame_ref_data.features)
+        features_matches = sorted(features_matches, key=lambda x: x.distance)
 
-            # Draw line between matches
-            cv2.line(vis, pt1, pt2, (0, 0, 255), 1)
+        img_matches = cv2.drawMatches(
+            img, frame_data.keypoints, img_ref, frame_ref_data.keypoints, features_matches[:10], None,
+            matchColor=(0, 255, 0),  # Green color for matches
+            singlePointColor=(255, 0, 0),  # Blue color for keypoints
+            flags=cv2.DrawMatchesFlags_NOT_DRAW_SINGLE_POINTS  # Don't draw unmatched keypoints
+        )
 
-        cv2.imshow(self.window_name, vis)
+        cv2.imshow(self.window_name, img_matches)
         key = cv2.waitKey(wait_time)
 
         # Handle window close
@@ -122,4 +119,5 @@ class Visualizer:
     def close() -> None:
         """Close all visualization windows."""
         cv2.destroyAllWindows()
+
         logger.info("Closed visualization windows")
