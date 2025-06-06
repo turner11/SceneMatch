@@ -7,11 +7,11 @@ import numpy as np
 @dataclass
 class FrameMetadata:
     """Metadata for a video frame."""
-    video_id: str
     frame_index: int
     timestamp: float
     keypoints: tuple[cv2.KeyPoint, ...]
     features: np.array
+    video_id: str = ''
 
 
 @dataclass
@@ -21,3 +21,8 @@ class FrameMatch:
     frame_reference: FrameMetadata
     distance_score: float
     notes: str = ''
+
+
+class FeaturesParams:
+    n_features: int = 1000
+    max_distance: int = 500

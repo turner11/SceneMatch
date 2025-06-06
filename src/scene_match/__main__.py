@@ -14,11 +14,13 @@ import sys
 
 # For support both python -m & python src/scenematch/__main__.py
 try:
-    from lib import frame_matcher as fm
+    from scene_match import stream
 except ImportError:
     parent = Path(__file__).resolve().parent.absolute()
     sys.path.insert(0, str(parent))
-    from lib import frame_matcher as fm
+    from scene_match import stream
+
+from scene_match.imaging import stream_types
 
 logger = logging.getLogger(__name__)
 
@@ -26,7 +28,6 @@ logger_format = '%(asctime)s - %(name)s - %(levelname)s - %(message)s'
 # logger_format = '%(asctime)s [%(name)s] %(module)s::%(funcName)s %(levelname)s - %(message)s'
 coloredlogs.install(level='CRITICAL', fmt=logger_format)
 coloredlogs.install(level='DEBUG', fmt=logger_format, logger=logger, stream=sys.stdout, isatty=True)
-
 
 # Configure rich-click
 click.rich_click.USE_RICH_MARKUP = True
@@ -58,6 +59,7 @@ def analyze(reference_video: Path, comparison_video: Path, sample_interval: int,
     REFERENCE_VIDEO: Path to the reference video file
     COMPARISON_VIDEO: Path to the video file to compare against
     """
+
     try:
         with Progress(
                 SpinnerColumn(),
@@ -66,16 +68,16 @@ def analyze(reference_video: Path, comparison_video: Path, sample_interval: int,
                 TaskProgressColumn(),
                 console=console
         ) as progress:
-            # Initialize frame matcher
-            matcher = fm.FrameMatcher(reference_video,  sample_interval=sample_interval, visualize=visualize)
+            stream_params = stream_types.StreamParams(start_frame=None, visualize=visualize,sample_interval=sample_interval)
+            index_params = stream_types.IndexParams()
 
-            # Build index for reference video
-            progress.add_task("Building index for reference video...", total=None)
-            matcher.build_index()
 
-            # Find matches
+            matcher = stream.get_indexed_matcher(reference_video, stream_params=stream_params,
+                                                 index_params=index_params)
+
+            # Find matches1
             progress.add_task("Finding matches...", total=None)
-            matches = matcher.find_matches(comparison_video, "comparison")
+            matches = stream.get_matches(comparison_video, reference_video, matcher, stream_params)
 
             # Display results
             table = Table(title="Matching Results")
@@ -128,12 +130,37 @@ def analyze(reference_video: Path, comparison_video: Path, sample_interval: int,
 
                 output.write_text(json.dumps(results, indent=2))
                 console.print(f"\nResults saved to: [blue]{output}[/]")
-
-    except KeyboardInterrupt:
-        console.print("\n[yellow]Analysis stopped by user[/]")
     except Exception as e:
         logger.exception('')
         console.print(f"\n[red]Error: {str(e)}[/]")
+        raise click.Abort()
+
+
+@cli.command(name='build')
+@click.argument('reference_video', type=click.Path(exists=True, path_type=Path))
+@click.option('--sample-interval', '-s', default=10, help='Number of frames to skip when sampling')
+@click.option('--visualize/--no-visualize', '-v', default=True, help='Show visualization during processing')
+@click.option('--output', '-o', type=click.Path(path_type=Path), help='Output file for index (JSON format)')
+def build_index(reference_video: Path, sample_interval: int, visualize: bool, output: Path = None):
+    """
+    Build an index for the reference video.
+
+    reference_video: Path to the reference video file
+    sample_interval: Number of frames to skip when sampling
+    visualize: Show visualization during processing
+    output: output file to save the index (JSON format)
+    """
+    try:
+
+        stream_params = stream_types.StreamParams(start_frame=None, visualize=visualize,
+                                                  sample_interval=sample_interval)
+        index_params = stream_types.IndexParams()
+        matcher = stream.get_indexed_matcher(reference_video, stream_params=stream_params, index_params=index_params)
+        console.print(f"[green]Index built successfully for {reference_video.name}[/]")
+        return matcher
+    except Exception as e:
+        logger.exception('')
+        console.print(f"[red]Error building index: {str(e)}[/]")
         raise click.Abort()
 
 

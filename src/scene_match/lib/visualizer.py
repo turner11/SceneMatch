@@ -74,7 +74,7 @@ class Visualizer:
             raise KeyboardInterrupt("Visualization stopped by user")
 
     def show_matches(self, frame: np.ndarray, frame_reference: np.ndarray, matches: FrameMatch,
-                     draw_descriptors=False, wait_time: int = 1) -> None:
+                     draw_descriptors=False) -> None:
         """
         Display two frames side by side with matching keypoints.
         
@@ -83,7 +83,6 @@ class Visualizer:
             frame_reference: Second frame to display
             matches: List of FrameMatch objects containing keypoints and matches
             draw_descriptors: Whether to draw keypoints on the frames
-            wait_time: Time to wait for key press (ms)
         """
 
         frame_data: FrameMetadata = matches.frame
@@ -108,12 +107,6 @@ class Visualizer:
         )
 
         cv2.imshow(self.window_name, img_matches)
-        key = cv2.waitKey(wait_time)
-
-        # Handle window close
-        if key == 27:  # ESC key
-            cv2.destroyAllWindows()
-            raise KeyboardInterrupt("Visualization stopped by user")
 
     @staticmethod
     def close() -> None:
