@@ -11,7 +11,7 @@ logger = logging.getLogger(__name__)
 
 
 class Visualizer:
-    def __init__(self, window_name: str = "SceneMatch Visualizer"):
+    def __init__(self, window_name: str = "SceneMatch Visualizer", water_mark=''):
         """
         Initialize the visualizer.
         
@@ -19,6 +19,7 @@ class Visualizer:
             window_name: Name of the visualization window
         """
         self.window_name = window_name
+        self.water_mark = water_mark
         cv2.namedWindow(window_name, cv2.WINDOW_NORMAL)
         logger.info(f"Initialized visualizer with window: {window_name}")
 
@@ -53,7 +54,8 @@ class Visualizer:
 
         return vis_frame
 
-    def show_frame(self, image: np.ndarray, keypoints: tuple[cv2.KeyPoint, ...] = None, show_keypoints=True) -> None:
+    def show_frame(self, image: np.ndarray, keypoints: tuple[cv2.KeyPoint, ...] = None, show_keypoints=True,
+                   n_keypoints: int = None) -> None:
         """
         Display a frame with optional keypoints.
         
@@ -61,16 +63,18 @@ class Visualizer:
             image: Frame to display
             keypoints: Optional list of keypoints to draw
             show_keypoints: Whether to draw keypoints on the frame
+            n_keypoints: Number of keypoints to draw (if None, all keypoints are drawn)
         """
         if show_keypoints and keypoints is not None:
+            keypoints = keypoints[:n_keypoints] if n_keypoints else keypoints
             image = self.draw_keypoints(image, keypoints)
 
-        cv2.imshow(self.window_name, image)
+        self.show_image(image)
 
     def show_frame_matches(self, image: np.ndarray, image_reference: np.ndarray, matches: FrameMatch,
                            show_keypoints=False,
                            show_match_lines=True,
-                           features_to_draw=10) -> None:
+                           features_to_draw: int = None) -> None:
         """
         Display two frames side by side with matching keypoints.
         
@@ -80,17 +84,32 @@ class Visualizer:
             matches: List of FrameMatch objects containing keypoints and matches
             show_keypoints: Whether to draw keypoints on the frames
             show_match_lines: Whether to draw lines between matching keypoints
+            features_to_draw: Number of features to draw
         """
 
         frame_data: FrameMetadata = matches.frame
         frame_ref_data: FrameMetadata = matches.frame_reference
 
-        if show_match_lines:
-            bf = cv2.BFMatcher(cv2.NORM_L1, crossCheck=True)
-            # Draw lines between matching keypoints
-            features_matches = bf.match(frame_data.features, frame_ref_data.features)
-            features_matches = sorted(features_matches, key=lambda x: x.distance)
-        else:
+        features, features_reference = frame_data.features, frame_ref_data.features
+        keypoints, keypoints_reference = frame_data.keypoints, frame_ref_data.keypoints
+
+        if features_to_draw:
+            features, features_reference = [f[:features_to_draw] for f in (features, features_reference)]
+            keypoints, keypoints_reference = [k[:features_to_draw] for k in (keypoints, keypoints_reference)]
+
+        # Do the matching using BFMatcher
+        bf = cv2.BFMatcher(cv2.NORM_L1, crossCheck=True)
+        # Draw lines between matching keypoints
+        features_matches = bf.match(features, features_reference)
+        features_matches = sorted(features_matches, key=lambda x: x.distance)
+
+        if not show_match_lines:
+            hits_frame = set(m.queryIdx for m in features_matches)
+            hits_reference = set(m.trainIdx for m in features_matches)
+
+            # We want to draw only MISSES
+            keypoints = [k for i, k in enumerate(keypoints) if i not in hits_frame]
+            keypoints_reference = [k for i, k in enumerate(keypoints_reference) if i not in hits_reference]
             features_matches = []
 
         # features_matches = features_matches[:features_to_draw]
@@ -103,20 +122,32 @@ class Visualizer:
             flags = flags | cv2.DrawMatchesFlags_NOT_DRAW_SINGLE_POINTS
 
         img_matches = cv2.drawMatches(
-            image, frame_data.keypoints, image_reference, frame_ref_data.keypoints, features_matches,
+            image, keypoints, image_reference, keypoints_reference, features_matches,
             outImg=None,
             # matchColor=(0, 255, 0), # Green color for matches
             singlePointColor=(0, 0, 255),  # Red color for no match
             flags=flags,
         )
 
+        self.show_image(img_matches)
+
+    def show_image(self, image: np.ndarray) -> None:
+        water_mark = self.water_mark
+        if water_mark:
+            top_center = (image.shape[1] // 2 - 20, 20)
+            color = (0, 165, 255)  # orange
+            cv2.putText(image, water_mark, top_center, cv2.FONT_HERSHEY_SIMPLEX, 0.5, color, 1)
+
+        cv2.imshow(self.window_name, image)
 
 
-        cv2.imshow(self.window_name, img_matches)
-
-    @staticmethod
-    def close() -> None:
+    def close(self) -> None:
         """Close all visualization windows."""
-        cv2.destroyAllWindows()
+
+        if self.window_name:
+            # If a specific window was created, close it
+            cv2.destroyWindow(self.window_name)
+        else:
+            cv2.destroyAllWindows()
 
         logger.info("Closed visualization windows")

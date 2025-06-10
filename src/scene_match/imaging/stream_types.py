@@ -27,7 +27,7 @@ class DrawParams:
     visualize: bool = False  # should visualize the image?
     show_matches: bool = True  # should show matches on the image
     show_keypoints: bool = True  # should show keypoints on the image
-    n_features: int = 10  # number of features to draw on the image
+    n_features: int = 0  # number of features to draw on the image
 
 
 @dataclass

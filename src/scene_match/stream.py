@@ -15,11 +15,12 @@ from .lib.visualizer import Visualizer
 
 logger = logging.getLogger(__name__)
 ESCAPE_KEY = 27  # ESC key
+QUIT_KEY = ord('q')  # 'q' key to quit
 PAUSE_CHAR = ' '  # Space key to toggle pause/resume
 TOGGLE_MATCH_DRAW_CHAR = ']'  # 'm' key to toggle match drawing
 TOGGLE_DESCRIPTION_CHAR = '['  # 'd' key to toggle description drawing
 MORE_FEATURES_CHAR, LESS_FEATURES_CHAR = '+', '-'
-FASTER_CHAR, SLOWER_CHAR = '>', '<'
+SLOWER_CHAR, FASTER_CHAR = ',', '.'
 
 
 def get_frames(source, stream_params: StreamParams):
@@ -36,7 +37,7 @@ def get_features_pipeline(source,
                           matcher: fm.FrameMatcher,
                           stream_params: StreamParams = None,
                           draw_params: DrawParams = None,
-                          pre_pipes=tuple(), quit_key=ESCAPE_KEY):
+                          pre_pipes=tuple()):
     stream_params = stream_params or StreamParams()
     draw_params = draw_params or DrawParams()
     visualize = draw_params.visualize
@@ -61,7 +62,7 @@ def get_features_pipeline(source,
             return
         sp, dp = stream_params, draw_params
         speed_step_size = 5
-        features_step_size = 10
+        features_step_size = 25
         # noinspection PyUnreachableCode
         match (pressed_key, pressed_char):
             case _, k if k == FASTER_CHAR:
@@ -82,12 +83,12 @@ def get_features_pipeline(source,
                 while chr(cv2.waitKey(1) & 0xFF) != PAUSE_CHAR:
                     pass
                 _d.update(pressed_key='')
-            case _,  k if k == MORE_FEATURES_CHAR:
+            case _, k if k == MORE_FEATURES_CHAR:
                 draw_params.n_features += features_step_size
                 console.print(f'Increased number of features to {draw_params.n_features}')
             case _, k if k == LESS_FEATURES_CHAR:
                 draw_params.n_features -= features_step_size
-                draw_params.n_features = max(draw_params.n_features, 1)
+                draw_params.n_features = max(draw_params.n_features, -1)
                 console.print(f'Decreased number of features to {draw_params.n_features}')
             case _:
                 # console.print(f'[red]Pressed: key: {pressed_key}, char: {pressed_char}[/red]')
@@ -102,7 +103,10 @@ def get_features_pipeline(source,
                                                    'image': f.image.copy(),
                                                    'i': next(counter)}), ),
         ops.do_action(lambda d: d.update({'key_pressed': cv2.waitKey(1) & 0xFF})),
-        ops.take_while(lambda d: d.get('key_pressed') != quit_key),
+
+        ops.take_while(lambda d: d.get('key_pressed') != ESCAPE_KEY),
+        ops.take_while(lambda d: d.get('key_pressed') != QUIT_KEY),
+
         ops.do_action(lambda d: handle_key_pressed(d)),
         ops.filter(lambda d: d['image'].size > 0),
         # Handle new frame
@@ -112,15 +116,16 @@ def get_features_pipeline(source,
     )
 
     if visualize:
-        visualizer = Visualizer(window_name='Frame Features',)
+        visualizer = Visualizer(water_mark='Frame Features', )
 
         def draw_frame(_d):
             dp = draw_params
             image, frame_data = [_d[k] for k in ('image', 'frame_data',)]
             show_keypoints = dp.show_keypoints
+            n_keypoints = draw_params.n_features
 
             keypoints = frame_data.keypoints
-            visualizer.show_frame(image, keypoints, show_keypoints, )
+            visualizer.show_frame(image, keypoints, show_keypoints, n_keypoints)
 
         observable = observable.pipe(
             ops.do_action(lambda d: draw_frame(_d=d)),
@@ -147,7 +152,6 @@ def get_indexed_matcher(source,
 
     def handle_completion():
         logger.info('Feature Collection completed')
-        cv2.destroyAllWindows()
 
     obs = obs.pipe(ops.map(lambda d: d['frame_data']), )
 
@@ -182,7 +186,7 @@ def get_matches(source, reference_source, matcher, stream_params: StreamParams =
     matches = []
     visualizer, cap = None, None
     if draw_params.visualize:
-        visualizer = Visualizer(window_name='Frame Matches',)
+        visualizer = Visualizer(water_mark='Frame Matches', )
         cap = cv2.VideoCapture(str(reference_source))
 
     def _handle_next(data):
@@ -200,10 +204,15 @@ def get_matches(source, reference_source, matcher, stream_params: StreamParams =
                 # Create matches for visualization
                 visualizer.show_frame_matches(image, image_ref, match,
                                               draw_params.show_keypoints,
-                                              draw_params.show_matches)
+                                              draw_params.show_matches,
+                                              draw_params.n_features)
 
     def _on_complete():
-        ...
+        if visualizer is not None:
+            visualizer.close()
+        if cap is not None:
+            cap.release()
+        console.print(f'[green]Collected {len(matches)} matches[/green]')
 
     def _on_error(e):
         console.print(f'[red]Error: {e}')
@@ -251,7 +260,6 @@ def record(source, output: str | Path, duration: int | float, draw_params: DrawP
         if writer:
             # noinspection PyUnresolvedReferences
             writer.release()
-        cv2.destroyAllWindows()
 
     def _on_error(e):
         console.print(f'[red]Error: {e}')

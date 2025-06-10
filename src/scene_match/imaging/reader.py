@@ -75,4 +75,3 @@ def get_stream(source, stream_params: StreamParams, fps_window=4):
 
     finally:
         cap.release()
-        cv2.destroyAllWindows()

@@ -189,5 +189,6 @@ def build_index(reference_video: Path, sample_interval: int, visualize: bool, ou
         raise click.Abort()
 
 
+
 if __name__ == '__main__':
     cli()
