@@ -119,7 +119,8 @@ class FrameMatcher:
                 frame=frame_meta,
                 frame_reference=reference_match,
                 distance_score=float(statistics.median(distances)),
-                notes=f'{votes} votes / {total_vectors} vectors ({votes * 100 / float(total_vectors)}%)',
+                features_percentage=votes / float(self.n_features),
+                notes=f'{votes} features matched)',
             )
 
             # logger.debug(f"Found match: Frame {frame_meta.frame_index} -> Frame {reference_match.frame_index} "

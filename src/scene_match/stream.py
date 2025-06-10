@@ -10,15 +10,20 @@ from reactivex import operators as ops
 from rich.console import Console
 from .lib import frame_matcher as fm
 from .imaging import reader
-from .imaging.stream_types import StreamParams, IndexParams, FrameCapture
+from .imaging.stream_types import StreamParams, IndexParams, FrameCapture, DrawParams
 from .lib.visualizer import Visualizer
 
 logger = logging.getLogger(__name__)
 ESCAPE_KEY = 27  # ESC key
+PAUSE_CHAR = ' '  # Space key to toggle pause/resume
+TOGGLE_MATCH_DRAW_CHAR = ']'  # 'm' key to toggle match drawing
+TOGGLE_DESCRIPTION_CHAR = '['  # 'd' key to toggle description drawing
+MORE_FEATURES_CHAR, LESS_FEATURES_CHAR = '+', '-'
+FASTER_CHAR, SLOWER_CHAR = '>', '<'
 
 
-def get_frames(source, start_frame=0, sample_interval=1):
-    stream = reader.get_stream(source, start_frame=start_frame, sample_interval=sample_interval)
+def get_frames(source, stream_params: StreamParams):
+    stream = reader.get_stream(source, stream_params=stream_params)
     observable = rx.from_iterable(stream).pipe(
         # Share a single subscription among multiple observers
         # (This is an alias for a composed publish() and ref_count().)
@@ -30,21 +35,63 @@ def get_frames(source, start_frame=0, sample_interval=1):
 def get_features_pipeline(source,
                           matcher: fm.FrameMatcher,
                           stream_params: StreamParams = None,
+                          draw_params: DrawParams = None,
                           pre_pipes=tuple(), quit_key=ESCAPE_KEY):
     stream_params = stream_params or StreamParams()
-    sample_interval = stream_params.sample_interval
-    visualize = stream_params.visualize
+    draw_params = draw_params or DrawParams()
+    visualize = draw_params.visualize
 
     if isinstance(source, rx.observable.observable.Observable):
         # Use a pre-built observable
         observable_base = source
     else:
         # build observable from source
-        observable_base = get_frames(source, start_frame=stream_params.start_frame, sample_interval=sample_interval)
+        observable_base = get_frames(source, stream_params=stream_params)
 
     if pre_pipes:
         # Apply pre-pipes
         observable_base = observable_base.pipe(*pre_pipes)
+
+    console = Console()
+
+    def handle_key_pressed(_d):
+        image, frame_data, pressed_key = [_d[k] for k in ('image', 'frame_data', 'key_pressed')]
+        pressed_char = chr(pressed_key)
+        if not pressed_char or pressed_key == 255:
+            return
+        sp, dp = stream_params, draw_params
+        speed_step_size = 5
+        features_step_size = 10
+        # noinspection PyUnreachableCode
+        match (pressed_key, pressed_char):
+            case _, k if k == FASTER_CHAR:
+                sp.sample_interval += speed_step_size
+                sp.sample_interval = min(sp.sample_interval, 100)  # Limit max sample interval
+                console.print(f'Increased frame sample to {stream_params.sample_interval}')
+            case _, k if k == SLOWER_CHAR:
+                sp.sample_interval -= speed_step_size
+                sp.sample_interval = max(sp.sample_interval, 1)  # Limit min sample interval
+                console.print(f'Decreased frame sample to {stream_params.sample_interval}')
+            case _, k if k == TOGGLE_DESCRIPTION_CHAR:
+                dp.show_keypoints = not dp.show_keypoints
+                console.print(f'Toggled description drawing to {dp.show_keypoints}')
+            case _, k if k == TOGGLE_MATCH_DRAW_CHAR:
+                dp.show_matches = not dp.show_matches
+                console.print(f'Toggled match drawing to {dp.show_matches}')
+            case _, k if k == PAUSE_CHAR:  # pause / resume
+                while chr(cv2.waitKey(1) & 0xFF) != PAUSE_CHAR:
+                    pass
+                _d.update(pressed_key='')
+            case _,  k if k == MORE_FEATURES_CHAR:
+                draw_params.n_features += features_step_size
+                console.print(f'Increased number of features to {draw_params.n_features}')
+            case _, k if k == LESS_FEATURES_CHAR:
+                draw_params.n_features -= features_step_size
+                draw_params.n_features = max(draw_params.n_features, 1)
+                console.print(f'Decreased number of features to {draw_params.n_features}')
+            case _:
+                # console.print(f'[red]Pressed: key: {pressed_key}, char: {pressed_char}[/red]')
+                pass
 
     counter = itertools.count()
 
@@ -55,7 +102,8 @@ def get_features_pipeline(source,
                                                    'image': f.image.copy(),
                                                    'i': next(counter)}), ),
         ops.do_action(lambda d: d.update({'key_pressed': cv2.waitKey(1) & 0xFF})),
-        ops.take_while(lambda d: d.get('pressed_key') != quit_key),
+        ops.take_while(lambda d: d.get('key_pressed') != quit_key),
+        ops.do_action(lambda d: handle_key_pressed(d)),
         ops.filter(lambda d: d['image'].size > 0),
         # Handle new frame
         # ops.do_action(lambda d: d.update(detections=detector.detect(d['image'])) if d['detect'] else None),
@@ -64,9 +112,18 @@ def get_features_pipeline(source,
     )
 
     if visualize:
-        visualizer = Visualizer()
+        visualizer = Visualizer(window_name='Frame Features',)
+
+        def draw_frame(_d):
+            dp = draw_params
+            image, frame_data = [_d[k] for k in ('image', 'frame_data',)]
+            show_keypoints = dp.show_keypoints
+
+            keypoints = frame_data.keypoints
+            visualizer.show_frame(image, keypoints, show_keypoints, )
+
         observable = observable.pipe(
-            ops.do_action(lambda d: visualizer.show_frame(d['image'], d['frame_data'].keypoints)),
+            ops.do_action(lambda d: draw_frame(_d=d)),
         )
 
     return observable
@@ -74,17 +131,23 @@ def get_features_pipeline(source,
 
 def get_indexed_matcher(source,
                         stream_params: StreamParams = None,
+                        draw_params: DrawParams = None,
                         index_params: IndexParams = None,
                         pre_pipes=tuple()):
     index_params = index_params or IndexParams()
     matcher = fm.FrameMatcher(n_features=index_params.n_features)
 
-    obs = get_features_pipeline(source, matcher, stream_params=stream_params, pre_pipes=pre_pipes)
+    obs = get_features_pipeline(source, matcher, stream_params=stream_params, draw_params=draw_params,
+                                pre_pipes=pre_pipes)
     frame_metadata_by_frame_index = {}
 
     def handle_error(_e):
         logger.exception('Got an error while collecting features')
         raise _e
+
+    def handle_completion():
+        logger.info('Feature Collection completed')
+        cv2.destroyAllWindows()
 
     obs = obs.pipe(ops.map(lambda d: d['frame_data']), )
 
@@ -92,7 +155,7 @@ def get_indexed_matcher(source,
         obs.subscribe(
             on_next=lambda frame_data: frame_metadata_by_frame_index.update({frame_data.frame_index: frame_data}),
             on_error=(lambda e: handle_error(e)),
-            on_completed=lambda: matcher.build_index()
+            on_completed=lambda: handle_completion()
 
         )
     except KeyboardInterrupt:
@@ -102,22 +165,24 @@ def get_indexed_matcher(source,
     return matcher
 
 
-def get_matches(source, reference_source, matcher, stream_params: StreamParams = None, ):
+def get_matches(source, reference_source, matcher, stream_params: StreamParams = None, draw_params: DrawParams = None):
     # copy stream_params
-    pipeline_stream_params = StreamParams(**stream_params.__dict__) if stream_params else StreamParams()
-    pipeline_stream_params.visualize = False
-    obs = get_features_pipeline(source, matcher, stream_params=pipeline_stream_params)
+    orig_visualize = draw_params.visualize
+    draw_params.visualize = False
+    obs = get_features_pipeline(source, matcher, stream_params=stream_params, draw_params=draw_params)
 
     obs = obs.pipe(
         ops.do_action(lambda d: d.update({'match': matcher.match(d['frame_data'])})),
     )
 
+    draw_params.visualize = orig_visualize
+
     console = Console()
 
     matches = []
     visualizer, cap = None, None
-    if stream_params.visualize:
-        visualizer = Visualizer()
+    if draw_params.visualize:
+        visualizer = Visualizer(window_name='Frame Matches',)
         cap = cv2.VideoCapture(str(reference_source))
 
     def _handle_next(data):
@@ -133,7 +198,9 @@ def get_matches(source, reference_source, matcher, stream_params: StreamParams =
             ret_ref, image_ref = cap.read()
             if ret_ref:
                 # Create matches for visualization
-                visualizer.show_matches(image, image_ref, match)
+                visualizer.show_frame_matches(image, image_ref, match,
+                                              draw_params.show_keypoints,
+                                              draw_params.show_matches)
 
     def _on_complete():
         ...
@@ -169,13 +236,14 @@ def get_write_video_action(output: str | Path):
     return _write_video
 
 
-def record(source, output: str | Path, duration: int | float, show: bool):
+def record(source, output: str | Path, duration: int | float, draw_params: DrawParams = None):
     aggregator = {'count': 0, 'source_fps': float('inf')}
+    draw_params = draw_params or DrawParams(visualize=True)
     console = Console()
 
     def _handle_next(frame: FrameCapture):
         image = frame.image
-        if show:
+        if draw_params.visualize:
             cv2.imshow(f'frame (Source: {source})', image)
 
     def _on_complete():
@@ -192,9 +260,9 @@ def record(source, output: str | Path, duration: int | float, show: bool):
     write_video_action = get_write_video_action(output)
 
     # video_stream = get_frames(source)
-    stream_params = StreamParams(visualize=True)
+    stream_params = StreamParams()
     matcher = fm.FrameMatcher()
-    video_stream = get_features_pipeline(source, matcher, stream_params)
+    video_stream = get_features_pipeline(source, matcher, stream_params=stream_params, draw_params=draw_params)
     pipeline = video_stream.pipe(
         ops.do_action(lambda _: aggregator.update(count=aggregator['count'] + 1)),
         ops.do_action(lambda frame: aggregator.update(source_fps=frame.stream_fps)),

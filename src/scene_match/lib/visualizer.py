@@ -53,58 +53,64 @@ class Visualizer:
 
         return vis_frame
 
-    def show_frame(self, frame: np.ndarray, keypoints: tuple[cv2.KeyPoint, ...] = None, wait_time: int = 1) -> None:
+    def show_frame(self, image: np.ndarray, keypoints: tuple[cv2.KeyPoint, ...] = None, show_keypoints=True) -> None:
         """
         Display a frame with optional keypoints.
         
         Args:
-            frame: Frame to display
+            image: Frame to display
             keypoints: Optional list of keypoints to draw
-            wait_time: Time to wait for key press (ms)
+            show_keypoints: Whether to draw keypoints on the frame
         """
-        if keypoints is not None:
-            frame = self.draw_keypoints(frame, keypoints)
+        if show_keypoints and keypoints is not None:
+            image = self.draw_keypoints(image, keypoints)
 
-        cv2.imshow(self.window_name, frame)
-        key = cv2.waitKey(wait_time)
+        cv2.imshow(self.window_name, image)
 
-        # Handle window close
-        if key == 27:  # ESC key
-            cv2.destroyAllWindows()
-            raise KeyboardInterrupt("Visualization stopped by user")
-
-    def show_matches(self, frame: np.ndarray, frame_reference: np.ndarray, matches: FrameMatch,
-                     draw_descriptors=False) -> None:
+    def show_frame_matches(self, image: np.ndarray, image_reference: np.ndarray, matches: FrameMatch,
+                           show_keypoints=False,
+                           show_match_lines=True,
+                           features_to_draw=10) -> None:
         """
         Display two frames side by side with matching keypoints.
         
         Args:
-            frame: First frame to display
-            frame_reference: Second frame to display
+            image: First frame to display
+            image_reference: Second frame to display
             matches: List of FrameMatch objects containing keypoints and matches
-            draw_descriptors: Whether to draw keypoints on the frames
+            show_keypoints: Whether to draw keypoints on the frames
+            show_match_lines: Whether to draw lines between matching keypoints
         """
 
         frame_data: FrameMetadata = matches.frame
         frame_ref_data: FrameMetadata = matches.frame_reference
-        # Draw keypoints on both frames
-        if draw_descriptors:
-            img = self.draw_keypoints(frame, frame_data.keypoints, (0, 255, 0))
-            img_ref = self.draw_keypoints(frame_reference, frame_ref_data.keypoints, (255, 0, 0))
-        else:
-            img, img_ref = frame.copy(), frame_reference.copy()
 
-        bf = cv2.BFMatcher(cv2.NORM_L1, crossCheck=True)
-        # Draw lines between matching keypoints
-        features_matches = bf.match(frame_data.features, frame_ref_data.features)
-        features_matches = sorted(features_matches, key=lambda x: x.distance)
+        if show_match_lines:
+            bf = cv2.BFMatcher(cv2.NORM_L1, crossCheck=True)
+            # Draw lines between matching keypoints
+            features_matches = bf.match(frame_data.features, frame_ref_data.features)
+            features_matches = sorted(features_matches, key=lambda x: x.distance)
+        else:
+            features_matches = []
+
+        # features_matches = features_matches[:features_to_draw]
+
+        # flags docs: https://docs.opencv.org/4.x/d4/d5d/group__features2d__draw.html#ga2c2ede79cd5141534ae70a3fd9f324c8
+        flags = cv2.DrawMatchesFlags_DEFAULT
+        if show_keypoints:
+            flags = flags | cv2.DrawMatchesFlags_DRAW_RICH_KEYPOINTS
+        else:
+            flags = flags | cv2.DrawMatchesFlags_NOT_DRAW_SINGLE_POINTS
 
         img_matches = cv2.drawMatches(
-            img, frame_data.keypoints, img_ref, frame_ref_data.keypoints, features_matches[:10], None,
-            matchColor=(0, 255, 0),  # Green color for matches
-            singlePointColor=(255, 0, 0),  # Blue color for keypoints
-            flags=cv2.DrawMatchesFlags_NOT_DRAW_SINGLE_POINTS  # Don't draw unmatched keypoints
+            image, frame_data.keypoints, image_reference, frame_ref_data.keypoints, features_matches,
+            outImg=None,
+            # matchColor=(0, 255, 0), # Green color for matches
+            singlePointColor=(0, 0, 255),  # Red color for no match
+            flags=flags,
         )
+
+
 
         cv2.imshow(self.window_name, img_matches)
 

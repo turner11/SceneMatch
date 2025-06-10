@@ -2,6 +2,17 @@
 Main entry point for SceneMatch video analysis.
 """
 
+# import cv2
+# while True:
+#     k = cv2.waitKey(500)
+#     kf = k & 0xFF
+#     c = chr(kf)
+#     if k == -1:
+#         ...
+#     print(f'k: {k}')
+#     print(f'kf: {kf}')
+#     print(f'c: {c}')
+
 import rich_click as click
 from pathlib import Path
 from rich.console import Console
@@ -11,6 +22,8 @@ from rich.table import Table
 import logging
 import coloredlogs
 import sys
+
+from scene_match.imaging.stream_types import DrawParams
 
 # For support both python -m & python src/scenematch/__main__.py
 try:
@@ -50,9 +63,11 @@ def cli():
 @click.argument('reference_video', type=click.Path(exists=True, path_type=Path))
 @click.argument('comparison_video', type=click.Path(exists=True, path_type=Path))
 @click.option('--sample-interval', '-s', default=10, help='Number of frames to skip when sampling')
+@click.option('--start-frame', '-f', type=int, default=0, help='Start frame for analysis (default: 0)')
 @click.option('--visualize/--no-visualize', '-v', default=True, help='Show visualization during processing')
 @click.option('--output', '-o', type=click.Path(path_type=Path), help='Output file for matches (JSON format)')
-def analyze(reference_video: Path, comparison_video: Path, sample_interval: int, visualize: bool, output: Path):
+def analyze(reference_video: Path, comparison_video: Path, sample_interval: int, start_frame, visualize: bool,
+            output: Path):
     """
     Analyze two videos and find matching frames.
     
@@ -68,16 +83,21 @@ def analyze(reference_video: Path, comparison_video: Path, sample_interval: int,
                 TaskProgressColumn(),
                 console=console
         ) as progress:
-            stream_params = stream_types.StreamParams(start_frame=None, visualize=visualize,sample_interval=sample_interval)
+            stream_params = stream_types.StreamParams(start_frame=start_frame, sample_interval=sample_interval)
+            draw_params = stream_types.DrawParams(visualize=visualize)
             index_params = stream_types.IndexParams()
 
-
-            matcher = stream.get_indexed_matcher(reference_video, stream_params=stream_params,
+            matcher = stream.get_indexed_matcher(reference_video,
+                                                 stream_params=stream_params,
+                                                 draw_params=draw_params,
                                                  index_params=index_params)
 
             # Find matches1
             progress.add_task("Finding matches...", total=None)
-            matches = stream.get_matches(comparison_video, reference_video, matcher, stream_params)
+
+            matches = stream.get_matches(comparison_video, reference_video, matcher,
+                                         stream_params=stream_params,
+                                         draw_params=draw_params, )
 
             # Display results
             table = Table(title="Matching Results")
@@ -86,7 +106,8 @@ def analyze(reference_video: Path, comparison_video: Path, sample_interval: int,
             table.add_column("Reference Frame", justify="right", style="cyan")
             table.add_column("Reference Time", justify="right", style="cyan")
             table.add_column("Distance Score", justify="right", style="yellow")
-            table.add_column("Notes", justify="left", style="yellow")
+            table.add_column("Features Percentage", justify="right", style="yellow")
+            table.add_column("Notes", justify="left", style="magenta")
 
             for match in matches:
                 table.add_row(
@@ -95,6 +116,7 @@ def analyze(reference_video: Path, comparison_video: Path, sample_interval: int,
                     str(match.frame_reference.frame_index),
                     f"{match.frame_reference.timestamp:.2f}s",
                     f"{match.distance_score:.4f}",
+                    f"{match.features_percentage:.2f}%",
                     f"{match.notes}"
                 )
 
@@ -152,10 +174,13 @@ def build_index(reference_video: Path, sample_interval: int, visualize: bool, ou
     """
     try:
 
-        stream_params = stream_types.StreamParams(start_frame=None, visualize=visualize,
-                                                  sample_interval=sample_interval)
+        stream_params = stream_types.StreamParams(sample_interval=sample_interval)
+        draw_params = DrawParams(visualize=visualize)
         index_params = stream_types.IndexParams()
-        matcher = stream.get_indexed_matcher(reference_video, stream_params=stream_params, index_params=index_params)
+        matcher = stream.get_indexed_matcher(reference_video,
+                                             stream_params=stream_params,
+                                             draw_params=draw_params,
+                                             index_params=index_params)
         console.print(f"[green]Index built successfully for {reference_video.name}[/]")
         return matcher
     except Exception as e:

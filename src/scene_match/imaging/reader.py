@@ -2,16 +2,17 @@ from pathlib import Path
 import cv2
 import numpy as np
 from .fps import FPS
-from .stream_types import FrameCapture
+from .stream_types import FrameCapture, StreamParams
 
 empty_image = np.ndarray((0, 0, 3))
 
 
-def get_stream(source, start_frame=0, fps_window=4, sample_interval=1, drop_frames=False):
+def get_stream(source, stream_params: StreamParams, fps_window=4):
     if source != 0 and not source:
         # 0 is a valid source for webcam1
         raise ValueError('Please provide a valid source for the stream.')
 
+    stream_params = stream_params or StreamParams()
     if isinstance(source, Path):
         source = str(source)
 
@@ -22,14 +23,15 @@ def get_stream(source, start_frame=0, fps_window=4, sample_interval=1, drop_fram
         raise ValueError(error_message)
 
     stream_fps = cap.get(cv2.CAP_PROP_FPS)
+    start_frame = stream_params.start_frame
     start_frame = start_frame if (start_frame and start_frame >= 0) else 0
     i_frame = start_frame if start_frame > 0 else 0
     cap.set(cv2.CAP_PROP_POS_FRAMES, i_frame)
     fps_counter = FPS(capacity=fps_window).start()
     try:
         while True:
-
-            if i_frame % sample_interval == 0:
+            # using member and not value for dynamic sample_interval
+            if i_frame % stream_params.sample_interval == 0:
                 ret, frame = cap.read()
             else:
                 frame = None
@@ -49,7 +51,7 @@ def get_stream(source, start_frame=0, fps_window=4, sample_interval=1, drop_fram
             fps = fps_counter.fps()
 
             time_behind: float = max(processing_time.total_seconds(), 0)
-            if time_behind and drop_frames:
+            if time_behind and stream_params.allow_drop_frames:
                 frames_to_drop = int(time_behind * stream_fps)
                 _ = [cap.grab() for _ in range(frames_to_drop)]
                 # cap.set(cv2.CAP_PROP_POS_FRAMES, i_frame + frames_to_drop)

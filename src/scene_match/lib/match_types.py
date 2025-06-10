@@ -20,6 +20,7 @@ class FrameMatch:
     frame: FrameMetadata
     frame_reference: FrameMetadata
     distance_score: float
+    features_percentage: float
     notes: str = ''
 
 
