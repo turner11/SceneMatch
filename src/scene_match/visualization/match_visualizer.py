@@ -1,33 +1,42 @@
 import sys
 from pathlib import Path
 
-
 import cv2
 from PyQt6.QtCore import Qt, QTimer
 from PyQt6.QtGui import QImage, QPixmap
 from PyQt6.QtWidgets import (QApplication, QMainWindow, QWidget, QVBoxLayout,
                             QHBoxLayout, QPushButton, QLabel, QSlider, QFileDialog)
 
-from ..scene_lib.frame_matcher import FrameMatch, FrameMatcher
+from scene_match.scene_lib.frame_matcher import FrameMatch, FrameMatcher
 # import numpy as np
 # from ..imaging.reader import get_stream
 # from ..imaging.stream_types import StreamParams
 
 
 class MatchVisualizer(QMainWindow):
-
-    def __init__(self, matcher: FrameMatcher, source_path: str | Path, reference_path: str | Path):
+    def __init__(self, matcher: FrameMatcher, video_path: str | Path):
         super().__init__()
         self.matcher = matcher
-        self.source_path = Path(source_path)
-        self.reference_path = Path(reference_path)
-        self.current_index = 0
+        self.video_path = Path(video_path).resolve().absolute()
+
+
+        self.video_path_ref = Path(matcher.video_source).resolve().absolute()
+
+        non_existing_paths = [p for p in [self.video_path, self.video_path_ref] if not Path(p).exists()]
+        if non_existing_paths:
+            missing = ', '.join(str(p) for p in non_existing_paths)
+            raise FileNotFoundError(f"Video file not found: {missing}")
+
+        self.current_frame = 0
         self.is_playing = False
         self.playback_speed = 1  # frames per second
+        self.current_match = None
 
-        # Initialize video captures
-        self.source_cap = cv2.VideoCapture(str(self.source_path))
-        self.reference_cap = cv2.VideoCapture(str(self.reference_path))
+        # Initialize video capture
+        self.cap = cv2.VideoCapture(str(self.video_path))
+        self.ref_cap =   cv2.VideoCapture(str(self.video_path))
+        self.total_frames = int(self.cap.get(cv2.CAP_PROP_FRAME_COUNT))
+        self.fps = self.cap.get(cv2.CAP_PROP_FPS)
 
         self.init_ui()
         self.update_frames()
@@ -44,15 +53,15 @@ class MatchVisualizer(QMainWindow):
         # Create image display area
         display_layout = QHBoxLayout()
         
-        # Source frame display
-        self.source_label = QLabel()
-        self.source_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        display_layout.addWidget(self.source_label)
+        # Current frame display
+        self.current_label = QLabel()
+        self.current_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        display_layout.addWidget(self.current_label)
 
-        # Reference frame display
-        self.reference_label = QLabel()
-        self.reference_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        display_layout.addWidget(self.reference_label)
+        # Match frame display
+        self.match_label = QLabel()
+        self.match_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        display_layout.addWidget(self.match_label)
 
         layout.addLayout(display_layout)
 
@@ -84,10 +93,15 @@ class MatchVisualizer(QMainWindow):
         # Frame slider
         self.frame_slider = QSlider(Qt.Orientation.Horizontal)
         self.frame_slider.setMinimum(0)
-        self.frame_slider.setMaximum(len(self.matches) - 1)
+        self.frame_slider.setMaximum(self.total_frames - 1)
         self.frame_slider.valueChanged.connect(self.set_frame)
         controls_layout.addWidget(QLabel('Frame:'))
         controls_layout.addWidget(self.frame_slider)
+
+        # Match info label
+        self.match_info_label = QLabel()
+        self.match_info_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        controls_layout.addWidget(self.match_info_label)
 
         layout.addLayout(controls_layout)
 
@@ -96,33 +110,53 @@ class MatchVisualizer(QMainWindow):
         self.playback_timer.timeout.connect(self.next_frame)
 
     def update_frames(self):
-        if not self.matches:
+        # Get current frame
+        self.cap.set(cv2.CAP_PROP_POS_FRAMES, self.current_frame)
+        ret, current_frame = self.cap.read()
+        if not ret:
             return
 
-        match = self.matches[self.current_index]
-        
-        # Get source frame
-        self.source_cap.set(cv2.CAP_PROP_POS_FRAMES, match.frame.frame_index)
-        ret, source_frame = self.source_cap.read()
-        if ret:
-            source_frame = cv2.cvtColor(source_frame, cv2.COLOR_BGR2RGB)
-            source_qimg = QImage(source_frame.data, source_frame.shape[1], source_frame.shape[0],
-                               source_frame.strides[0], QImage.Format.Format_RGB888)
-            self.source_label.setPixmap(QPixmap.fromImage(source_qimg).scaled(
-                self.source_label.size(), Qt.AspectRatioMode.KeepAspectRatio))
+        # Convert current frame to RGB
+        current_frame = cv2.cvtColor(current_frame, cv2.COLOR_BGR2RGB)
+        current_qimg = QImage(current_frame.data, current_frame.shape[1], current_frame.shape[0],
+                            current_frame.strides[0], QImage.Format.Format_RGB888)
+        self.current_label.setPixmap(QPixmap.fromImage(current_qimg).scaled(
+            self.current_label.size(), Qt.AspectRatioMode.KeepAspectRatio))
 
-        # Get reference frame
-        self.reference_cap.set(cv2.CAP_PROP_POS_FRAMES, match.frame_reference.frame_index)
-        ret, reference_frame = self.reference_cap.read()
-        if ret:
-            reference_frame = cv2.cvtColor(reference_frame, cv2.COLOR_BGR2RGB)
-            reference_qimg = QImage(reference_frame.data, reference_frame.shape[1], reference_frame.shape[0],
-                                  reference_frame.strides[0], QImage.Format.Format_RGB888)
-            self.reference_label.setPixmap(QPixmap.fromImage(reference_qimg).scaled(
-                self.reference_label.size(), Qt.AspectRatioMode.KeepAspectRatio))
+        # Get match for current frame
+        frame_meta = self.matcher.save_frame_features(current_frame, self.current_frame)
+        self.current_match = self.matcher.match(frame_meta)
+
+        if self.current_match:
+            # Get reference frame
+            ref_frame = self.current_match.frame_reference
+            ref_frame_index = ref_frame.frame_index
+            
+            # Load reference video if needed
+            if not hasattr(self, 'ref_cap') or self.ref_cap is None:
+                self.ref_cap = cv2.VideoCapture(str(self.matcher.reference_path))
+            
+            self.ref_cap.set(cv2.CAP_PROP_POS_FRAMES, ref_frame_index)
+            ret, match_frame = self.ref_cap.read()
+            
+            if ret:
+                match_frame = cv2.cvtColor(match_frame, cv2.COLOR_BGR2RGB)
+                match_qimg = QImage(match_frame.data, match_frame.shape[1], match_frame.shape[0],
+                                  match_frame.strides[0], QImage.Format.Format_RGB888)
+                self.match_label.setPixmap(QPixmap.fromImage(match_qimg).scaled(
+                    self.match_label.size(), Qt.AspectRatioMode.KeepAspectRatio))
+                
+                # Update match info
+                info_text = (f"Match: Frame {self.current_frame} → Frame {ref_frame_index}\n"
+                           f"Score: {self.current_match.distance_score:.2f}\n"
+                           f"Features: {self.current_match.features_percentage:.1%}")
+                self.match_info_label.setText(info_text)
+        else:
+            self.match_label.clear()
+            self.match_info_label.setText("No match found")
 
         # Update frame slider
-        self.frame_slider.setValue(self.current_index)
+        self.frame_slider.setValue(self.current_frame)
 
     def toggle_playback(self):
         self.is_playing = not self.is_playing
@@ -133,17 +167,17 @@ class MatchVisualizer(QMainWindow):
             self.playback_timer.stop()
 
     def next_frame(self):
-        if self.current_index < len(self.matches) - 1:
-            self.current_index += 1
+        if self.current_frame < self.total_frames - 1:
+            self.current_frame += 1
             self.update_frames()
 
     def prev_frame(self):
-        if self.current_index > 0:
-            self.current_index -= 1
+        if self.current_frame > 0:
+            self.current_frame -= 1
             self.update_frames()
 
     def set_frame(self, index: int):
-        self.current_index = index
+        self.current_frame = index
         self.update_frames()
 
     def change_speed(self, speed: int):
@@ -152,22 +186,22 @@ class MatchVisualizer(QMainWindow):
             self.playback_timer.setInterval(1000 // speed)
 
     def closeEvent(self, event):
-        self.source_cap.release()
-        self.reference_cap.release()
+        self.cap.release()
+        if hasattr(self, 'ref_cap') and self.ref_cap is not None:
+            self.ref_cap.release()
         super().closeEvent(event)
 
 
-def visualize_matches(matcher: FrameMatcher, source_path: str | Path, reference_path: str | Path):
+def visualize_matches(matcher: FrameMatcher, video_path: str | Path):
     """
     Launch the match visualizer application.
     
     Args:
-        matches: List of FrameMatch objects containing the matching results
-        source_path: Path to the source video file
-        reference_path: Path to the reference video file
+        matcher: FrameMatcher instance with built index
+        video_path: Path to the video file to analyze
     """
     app = QApplication(sys.argv)
-    visualizer = MatchVisualizer(matcher, source_path, reference_path)
+    visualizer = MatchVisualizer(matcher, video_path)
     visualizer.show()
     sys.exit(app.exec())
 
@@ -177,13 +211,10 @@ if __name__ == '__main__':
     import argparse
     
     parser = argparse.ArgumentParser(description='Visualize frame matches')
-    parser.add_argument('source', help='Path to source video file')
-    parser.add_argument('reference', help='Path to reference video file')
+    parser.add_argument('video', help='Path to video file to analyze')
     parser.add_argument('matcher', help='Path to matcher file (serialized FrameMatcher)')
     
     args = parser.parse_args()
 
     matcher = FrameMatcher.deserialize(args.matcher)
-
-    
-    visualize_matches(matcher, args.source, args.reference)
+    visualize_matches(matcher, args.video)

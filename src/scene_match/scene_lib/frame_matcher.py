@@ -29,7 +29,7 @@ class FrameMatcher:
             n_features: Number of SIFT features to extract from each frame
         """
 
-        self.video_source = video_source
+        self.video_source = Path(video_source).resolve().absolute()
         self.index: faiss.IndexFlatL2 | None = None
         self.n_features = n_features
         self.frame_metadata_by_frame_index = {}
@@ -202,7 +202,7 @@ class FrameMatcher:
         path = Path(path)
 
         # Load metadata
-        metadata_path = path / META_DATA_FILE_NAME
+        metadata_path = (path / META_DATA_FILE_NAME).resolve().absolute()
         with open(metadata_path, 'rb') as f:
             metadata_dict = orjson.loads(f.read())
 
