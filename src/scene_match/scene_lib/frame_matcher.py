@@ -5,14 +5,12 @@ import itertools
 import statistics
 from collections import defaultdict
 from pathlib import Path
-import json
+import orjson
 
 import cv2
 import numpy as np
 import faiss
 import logging
-
-from pyreadline3.modes.vi import ViExternalEditor
 
 from .match_types import FrameMetadata, FrameMatch
 
@@ -23,7 +21,7 @@ META_DATA_FILE_NAME = 'metadata.json'
 
 
 class FrameMatcher:
-    def __init__(self, video_source: str | Path,  n_features=500):
+    def __init__(self, video_source: str | Path, n_features=500):
         """
         Initialize the Frame Matcher.
 
@@ -167,26 +165,27 @@ class FrameMatcher:
         """
         path = Path(path)
         path.mkdir(parents=True, exist_ok=True)
-        
+
         # Save frame metadata
-        metadata_path = path / 'metadata.json'
+        metadata_path = (path / 'metadata.json').resolve().absolute()
         metadata_dict = {
             'video_source': str(self.video_source),
             'n_features': self.n_features,
             'frame_metadata': {str(k): v.to_dict() for k, v in self.frame_metadata_by_frame_index.items()},
             'frame_data_by_frame_index': self.frame_data_by_frame_index
         }
-        logger.info(f"Dumping index metadata to {metadata_path}")
-        with open(metadata_path, 'w') as f:
-            json.dump(metadata_dict, f, indent=2)
-        
+        logger.info(f"Dumping index metadata to '{metadata_path}'")
+        with open(metadata_path, 'wb') as f:
+            f.write(orjson.dumps(metadata_dict))
+
         # Save FAISS index if it exists
         if self.index is not None:
+            logger.info(f"Dumping Feiss index")
             index_path = path / INDEX_FILE_NAME
             faiss.write_index(self.index, str(index_path))
             logger.info(f"Saved FAISS index to {index_path}")
-        
-        logger.info(f"Saved frame matcher state to {path}")
+
+        logger.info(f"Saved frame matcher state to {path} ({len(self.frame_metadata_by_frame_index)} frames)")
         return path.resolve().absolute()
 
     @classmethod
@@ -201,27 +200,27 @@ class FrameMatcher:
             FrameMatcher: The deserialized frame matcher
         """
         path = Path(path)
-        
+
         # Load metadata
         metadata_path = path / META_DATA_FILE_NAME
-        with open(metadata_path, 'r') as f:
-            metadata_dict = json.load(f)
-        
+        with open(metadata_path, 'rb') as f:
+            metadata_dict = orjson.loads(f.read())
+
         # Create matcher instance
-        matcher = FrameMatcher(video_source=metadata_dict['video_source'] ,n_features=metadata_dict['n_features'])
-        
+        matcher = FrameMatcher(video_source=metadata_dict['video_source'], n_features=metadata_dict['n_features'])
+
         # Load frame metadata
         matcher.frame_metadata_by_frame_index = {
-            int(k): FrameMetadata.from_dict(v) 
+            int(k): FrameMetadata.from_dict(v)
             for k, v in metadata_dict['frame_metadata'].items()
         }
         matcher.frame_data_by_frame_index = metadata_dict['frame_data_by_frame_index']
-        
+
         # Load FAISS index if it exists
         index_path = path / INDEX_FILE_NAME
         if index_path.exists():
             matcher.index = faiss.read_index(str(index_path))
             logger.info(f"Loaded FAISS index from {index_path}")
-        
+
         logger.info(f"Loaded frame matcher state from {path}")
         return matcher

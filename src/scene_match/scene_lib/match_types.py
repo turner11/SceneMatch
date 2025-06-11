@@ -57,7 +57,7 @@ class FrameMetadata:
         )
 
         # Convert the feature list back to a numpy array
-        features = np.array(data['features'])
+        features = np.array(data['features']).astype(np.float32)
 
         return cls(
             frame_index=data['frame_index'],
