@@ -1,0 +1,19 @@
+-r requirements.txt
+
+
+pytest>=7.4.0
+# Tests
+pytest-icdiff
+pytest-cov
+pytest-xdist
+pytest-asyncio
+pytest-sugar
+pytest-html
+pytest-profiling
+
+#bokeh
+#line_profiler
+#streamlit
+
+#uvloop; sys_platform == 'linux'
+#urllib3>=2.2.2  # for satisfying dependabot security alert
