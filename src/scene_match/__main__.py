@@ -23,7 +23,7 @@ import logging
 import coloredlogs
 import sys
 
-from scene_match.imaging.stream_types import DrawParams
+from scene_match.scene_lib.frame_matcher import FrameMatcher
 
 # For support both python -m & python src/scenematch/__main__.py
 try:
@@ -59,15 +59,61 @@ def cli():
     pass
 
 
-@cli.command()
+@cli.command('build')
 @click.argument('reference_video', type=click.Path(exists=True, path_type=Path))
-@click.argument('comparison_video', type=click.Path(exists=True, path_type=Path))
 @click.option('--sample-interval', '-s', default=10, help='Number of frames to skip when sampling')
 @click.option('--start-frame', '-f', type=int, default=0, help='Start frame for analysis (default: 0)')
 @click.option('--visualize/--no-visualize', '-v', default=True, help='Show visualization during processing')
 @click.option('--output', '-o', type=click.Path(path_type=Path), help='Output directory for index file')
-def analyze(reference_video: Path, comparison_video: Path, sample_interval: int, start_frame, visualize: bool,
-            output: Path):
+def build_index(reference_video: Path, sample_interval: int = 10, start_frame: int = 0, visualize: bool = True,
+                output: Path = None):
+    """
+    Build an index for the reference video.
+
+    :param reference_video: Path to the reference video file
+    :param sample_interval: Number of frames to skip when sampling
+    :param start_frame: Start frame for analysis (default: 0)
+    :param visualize: Show visualization during processing
+    :param output: Output file to save the index (JSON format)
+    :return: Matcher object with built index
+    """
+    try:
+        with Progress(
+                SpinnerColumn(),
+                TextColumn("[progress.description]{task.description}"),
+                BarColumn(),
+                TaskProgressColumn(),
+                console=console
+        ) as progress:
+            stream_params = stream_types.StreamParams(start_frame=start_frame, sample_interval=sample_interval)
+            draw_params = stream_types.DrawParams(visualize=visualize)
+            index_params = stream_types.IndexParams()
+
+            matcher = stream.get_indexed_matcher(reference_video,
+                                                 stream_params=stream_params,
+                                                 draw_params=draw_params,
+                                                 index_params=index_params)
+
+            # Save results if an output file specified
+            if output:
+                progress.add_task("Saving index...", total=None)
+                console.print(f"\nSaving results to: [blue]'{output}'[/]")
+                index_location = matcher.serialize(output)
+                console.print(f"\nResults saved to: [blue]'{index_location}'[/]")
+
+    except Exception as e:
+        logger.exception('')
+        console.print(f"\n[red]Error: {str(e)}[/]")
+
+
+
+@cli.command()
+@click.argument('reference', type=click.Path(exists=True, path_type=Path),)  #help='reference_video / path to serialized index'
+@click.argument('comparison_video', type=click.Path(exists=True, path_type=Path))
+@click.option('--sample-interval', '-s', default=10, help='Number of frames to skip when sampling')
+@click.option('--start-frame', '-f', type=int, default=0, help='Start frame for analysis (default: 0)')
+@click.option('--visualize/--no-visualize', '-v', default=True, help='Show visualization during processing')
+def analyze(reference: Path, comparison_video: Path, sample_interval: int, start_frame: int, visualize: bool, ):
     """
     Analyze two videos and find matching frames.
     
@@ -87,18 +133,22 @@ def analyze(reference_video: Path, comparison_video: Path, sample_interval: int,
             draw_params = stream_types.DrawParams(visualize=visualize)
             index_params = stream_types.IndexParams()
 
-            matcher = stream.get_indexed_matcher(reference_video,
-                                                 stream_params=stream_params,
-                                                 draw_params=draw_params,
-                                                 index_params=index_params)
+            if reference.is_dir():
+                progress.add_task("Loading matcher from index", total=None)
+                matcher = FrameMatcher.deserialize(reference)
+            elif reference.is_file():
+                matcher = stream.get_indexed_matcher(reference,
+                                                     stream_params=stream_params,
+                                                     draw_params=draw_params,
+                                                     index_params=index_params)
+            else:
+                raise ValueError(f"Invalid reference video path (not file / folder): {reference})")
 
             # Find matches1
             progress.add_task("Finding matches...", total=None)
-
-            matches = stream.get_matches(comparison_video, reference_video, matcher,
+            matches = stream.get_matches(comparison_video, matcher,
                                          stream_params=stream_params,
                                          draw_params=draw_params, )
-
 
             # Display results
             table = Table(title="Matching Results")
@@ -123,51 +173,16 @@ def analyze(reference_video: Path, comparison_video: Path, sample_interval: int,
 
             console.print(Panel.fit(
                 f"Found [bold green]{len(matches)}[/] matches between videos\n"
-                f"Reference: [cyan]{reference_video.name}[/]\n"
+                f"Reference: [cyan]{Path(matcher.video_source).name}[/]\n"
                 f"Comparison: [green]{comparison_video.name}[/]",
                 title="Analysis Complete"
             ))
             console.print(table)
 
-            # Save results if an output file specified
-            if output:
-                console.print(f"\nSaving results to: [blue]{output}[/]")
-                index_location = matcher.serialize(output)
-                console.print(f"\nResults saved to: [blue]{index_location}[/]")
+
     except Exception as e:
         logger.exception('')
         console.print(f"\n[red]Error: {str(e)}[/]")
-        raise click.Abort()
-
-
-@cli.command(name='build')
-@click.argument('reference_video', type=click.Path(exists=True, path_type=Path))
-@click.option('--sample-interval', '-s', default=10, help='Number of frames to skip when sampling')
-@click.option('--visualize/--no-visualize', '-v', default=True, help='Show visualization during processing')
-@click.option('--output', '-o', type=click.Path(path_type=Path), help='Output file for index (JSON format)')
-def build_index(reference_video: Path, sample_interval: int, visualize: bool, output: Path = None):
-    """
-    Build an index for the reference video.
-
-    reference_video: Path to the reference video file
-    sample_interval: Number of frames to skip when sampling
-    visualize: Show visualization during processing
-    output: output file to save the index (JSON format)
-    """
-    try:
-
-        stream_params = stream_types.StreamParams(sample_interval=sample_interval)
-        draw_params = DrawParams(visualize=visualize)
-        index_params = stream_types.IndexParams()
-        matcher = stream.get_indexed_matcher(reference_video,
-                                             stream_params=stream_params,
-                                             draw_params=draw_params,
-                                             index_params=index_params)
-        console.print(f"[green]Index built successfully for {reference_video.name}[/]")
-        return matcher
-    except Exception as e:
-        logger.exception('')
-        console.print(f"[red]Error building index: {str(e)}[/]")
         raise click.Abort()
 
 

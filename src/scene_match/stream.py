@@ -140,7 +140,7 @@ def get_indexed_matcher(source,
                         index_params: IndexParams = None,
                         pre_pipes=tuple()):
     index_params = index_params or IndexParams()
-    matcher = fm.FrameMatcher(n_features=index_params.n_features)
+    matcher = fm.FrameMatcher(source, n_features=index_params.n_features)
 
     obs = get_features_pipeline(source, matcher, stream_params=stream_params, draw_params=draw_params,
                                 pre_pipes=pre_pipes)
@@ -166,12 +166,13 @@ def get_indexed_matcher(source,
         logger.info("Feature Collection stopped by user")
 
     matcher.build_index()
-    return
+    return matcher
 
 
 
-def get_matches(source, reference_source, matcher, stream_params: StreamParams = None, draw_params: DrawParams = None):
+def get_matches(source, matcher, stream_params: StreamParams = None, draw_params: DrawParams = None):
     # copy stream_params
+    reference_source = matcher.video_source
     orig_visualize = draw_params.visualize
     draw_params.visualize = False
     obs = get_features_pipeline(source, matcher, stream_params=stream_params, draw_params=draw_params)

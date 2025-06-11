@@ -12,6 +12,8 @@ import numpy as np
 import faiss
 import logging
 
+from pyreadline3.modes.vi import ViExternalEditor
+
 from .match_types import FrameMetadata, FrameMatch
 
 logger = logging.getLogger(__name__)
@@ -21,7 +23,7 @@ META_DATA_FILE_NAME = 'metadata.json'
 
 
 class FrameMatcher:
-    def __init__(self, n_features=500):
+    def __init__(self, video_source: str | Path,  n_features=500):
         """
         Initialize the Frame Matcher.
 
@@ -29,6 +31,7 @@ class FrameMatcher:
             n_features: Number of SIFT features to extract from each frame
         """
 
+        self.video_source = video_source
         self.index: faiss.IndexFlatL2 | None = None
         self.n_features = n_features
         self.frame_metadata_by_frame_index = {}
@@ -168,6 +171,7 @@ class FrameMatcher:
         # Save frame metadata
         metadata_path = path / 'metadata.json'
         metadata_dict = {
+            'video_source': str(self.video_source),
             'n_features': self.n_features,
             'frame_metadata': {str(k): v.to_dict() for k, v in self.frame_metadata_by_frame_index.items()},
             'frame_data_by_frame_index': self.frame_data_by_frame_index
@@ -204,7 +208,7 @@ class FrameMatcher:
             metadata_dict = json.load(f)
         
         # Create matcher instance
-        matcher = cls(n_features=metadata_dict['n_features'])
+        matcher = FrameMatcher(video_source=metadata_dict['video_source'] ,n_features=metadata_dict['n_features'])
         
         # Load frame metadata
         matcher.frame_metadata_by_frame_index = {
