@@ -65,7 +65,7 @@ def cli():
 @click.option('--sample-interval', '-s', default=10, help='Number of frames to skip when sampling')
 @click.option('--start-frame', '-f', type=int, default=0, help='Start frame for analysis (default: 0)')
 @click.option('--visualize/--no-visualize', '-v', default=True, help='Show visualization during processing')
-@click.option('--output', '-o', type=click.Path(path_type=Path), help='Output file for matches (JSON format)')
+@click.option('--output', '-o', type=click.Path(path_type=Path), help='Output directory for index file')
 def analyze(reference_video: Path, comparison_video: Path, sample_interval: int, start_frame, visualize: bool,
             output: Path):
     """
@@ -99,6 +99,7 @@ def analyze(reference_video: Path, comparison_video: Path, sample_interval: int,
                                          stream_params=stream_params,
                                          draw_params=draw_params, )
 
+
             # Display results
             table = Table(title="Matching Results")
             table.add_column("Comparison Frame", justify="right", style="green")
@@ -130,28 +131,9 @@ def analyze(reference_video: Path, comparison_video: Path, sample_interval: int,
 
             # Save results if an output file specified
             if output:
-                import json
-                from datetime import datetime
-
-                results = {
-                    "timestamp": datetime.now().isoformat(),
-                    "reference_video": str(reference_video),
-                    "comparison_video": str(comparison_video),
-                    "sample_interval": sample_interval,
-                    "matches": [
-                        {
-                            "reference_frame": match.frame_reference.frame_index,
-                            "reference_time": match.frame_reference.timestamp,
-                            "comparison_frame": match.frame.frame_index,
-                            "comparison_time": match.frame.timestamp,
-                            "similarity_score": match.distance_score
-                        }
-                        for match in matches
-                    ]
-                }
-
-                output.write_text(json.dumps(results, indent=2))
-                console.print(f"\nResults saved to: [blue]{output}[/]")
+                console.print(f"\nSaving results to: [blue]{output}[/]")
+                index_location = matcher.serialize(output)
+                console.print(f"\nResults saved to: [blue]{index_location}[/]")
     except Exception as e:
         logger.exception('')
         console.print(f"\n[red]Error: {str(e)}[/]")
@@ -188,6 +170,11 @@ def build_index(reference_video: Path, sample_interval: int, visualize: bool, ou
         console.print(f"[red]Error building index: {str(e)}[/]")
         raise click.Abort()
 
+
+# @cli.command(name='record')
+# @click.argument('source', type=click.Path(exists=True, path_type=Path))
+# @click.option('--output', '-o', type=click.Path(path_type=Path), help='Output video file path')
+# @click.option('--duration', '-d', type=float, default=10.0, help='Duration to record in seconds')
 
 
 if __name__ == '__main__':

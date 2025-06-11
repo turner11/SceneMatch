@@ -5,7 +5,7 @@ import cv2
 import numpy as np
 import logging
 
-from scene_match.lib.match_types import FrameMatch, FrameMetadata
+from scene_match.scene_lib.match_types import FrameMatch, FrameMetadata
 
 logger = logging.getLogger(__name__)
 

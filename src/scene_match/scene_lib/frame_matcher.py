@@ -4,6 +4,8 @@ Frame Matcher module for finding similar frames between two drone videos.
 import itertools
 import statistics
 from collections import defaultdict
+from pathlib import Path
+import json
 
 import cv2
 import numpy as np
@@ -13,6 +15,9 @@ import logging
 from .match_types import FrameMetadata, FrameMatch
 
 logger = logging.getLogger(__name__)
+
+INDEX_FILE_NAME = 'index.faiss'
+META_DATA_FILE_NAME = 'metadata.json'
 
 
 class FrameMatcher:
@@ -107,8 +112,6 @@ class FrameMatcher:
         # Majority vote
         tpl = max(image_votes.items(), key=lambda t: len(t[1]))
         match_index, distances = tpl
-
-        total_vectors = len(distances)
         votes = len(distances)
 
         match = None
@@ -151,3 +154,70 @@ class FrameMatcher:
         logger.info(f"Built index with {len(all_descriptors)} features from {len(metadata_by_frame_index)} frames")
 
         return self.index
+
+    def serialize(self, path: str | Path):
+        """
+        Serialize the frame matcher state to a directory.
+        
+        Args:
+            path: directory path to save the serialized data to
+        """
+        path = Path(path)
+        path.mkdir(parents=True, exist_ok=True)
+        
+        # Save frame metadata
+        metadata_path = path / 'metadata.json'
+        metadata_dict = {
+            'n_features': self.n_features,
+            'frame_metadata': {str(k): v.to_dict() for k, v in self.frame_metadata_by_frame_index.items()},
+            'frame_data_by_frame_index': self.frame_data_by_frame_index
+        }
+        logger.info(f"Dumping index metadata to {metadata_path}")
+        with open(metadata_path, 'w') as f:
+            json.dump(metadata_dict, f, indent=2)
+        
+        # Save FAISS index if it exists
+        if self.index is not None:
+            index_path = path / INDEX_FILE_NAME
+            faiss.write_index(self.index, str(index_path))
+            logger.info(f"Saved FAISS index to {index_path}")
+        
+        logger.info(f"Saved frame matcher state to {path}")
+        return path.resolve().absolute()
+
+    @classmethod
+    def deserialize(cls, path: str | Path) -> 'FrameMatcher':
+        """
+        Deserialize a frame matcher from a directory.
+        
+        Args:
+            path: Path to the serialized data directory
+            
+        Returns:
+            FrameMatcher: The deserialized frame matcher
+        """
+        path = Path(path)
+        
+        # Load metadata
+        metadata_path = path / META_DATA_FILE_NAME
+        with open(metadata_path, 'r') as f:
+            metadata_dict = json.load(f)
+        
+        # Create matcher instance
+        matcher = cls(n_features=metadata_dict['n_features'])
+        
+        # Load frame metadata
+        matcher.frame_metadata_by_frame_index = {
+            int(k): FrameMetadata.from_dict(v) 
+            for k, v in metadata_dict['frame_metadata'].items()
+        }
+        matcher.frame_data_by_frame_index = metadata_dict['frame_data_by_frame_index']
+        
+        # Load FAISS index if it exists
+        index_path = path / INDEX_FILE_NAME
+        if index_path.exists():
+            matcher.index = faiss.read_index(str(index_path))
+            logger.info(f"Loaded FAISS index from {index_path}")
+        
+        logger.info(f"Loaded frame matcher state from {path}")
+        return matcher

@@ -8,10 +8,10 @@ import numpy as np
 import reactivex as rx
 from reactivex import operators as ops
 from rich.console import Console
-from .lib import frame_matcher as fm
+from .scene_lib import frame_matcher as fm
 from .imaging import reader
 from .imaging.stream_types import StreamParams, IndexParams, FrameCapture, DrawParams
-from .lib.visualizer import Visualizer
+from .scene_lib.visualizer import Visualizer
 
 logger = logging.getLogger(__name__)
 ESCAPE_KEY = 27  # ESC key
@@ -166,7 +166,8 @@ def get_indexed_matcher(source,
         logger.info("Feature Collection stopped by user")
 
     matcher.build_index()
-    return matcher
+    return
+
 
 
 def get_matches(source, reference_source, matcher, stream_params: StreamParams = None, draw_params: DrawParams = None):
