@@ -8,7 +8,7 @@ from PyQt6.QtGui import QImage, QPixmap, QAction, QActionGroup
 from PyQt6.QtWidgets import (QApplication, QMainWindow, QWidget, QVBoxLayout,
                              QHBoxLayout, QPushButton, QLabel, QSlider, QFileDialog, QSizePolicy, QCheckBox,
                              QStackedLayout, QComboBox, QGraphicsView, QGraphicsScene, QGraphicsPixmapItem,
-                             QMessageBox)
+                             QMessageBox, QMenu)
 
 from scene_match.scene_lib.frame_matcher import FrameMatch, FrameMatcher
 
@@ -408,26 +408,42 @@ class MatchVisualizer(QMainWindow):
         self.speed_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
         controls_layout.addWidget(self.speed_label)
 
+        # View Mode Dropdown Button
+        self.view_mode_button = QPushButton("👁️ View")
+        self.view_mode_button.setToolTip("Change Visualization Mode")
+
+        view_menu = QMenu(self)
+        self.view_action_group = QActionGroup(self)
+        self.view_action_group.setExclusive(True)
+
+        action_images = QAction("Images Only", self)
+        action_images.setCheckable(True)
+        action_images.setChecked(True)
+        action_images.triggered.connect(self.update_frames)
+        view_menu.addAction(action_images)
+        self.view_action_group.addAction(action_images)
+
+        action_matches = QAction("Show Matches", self)
+        action_matches.setCheckable(True)
+        action_matches.triggered.connect(self.update_frames)
+        view_menu.addAction(action_matches)
+        self.view_action_group.addAction(action_matches)
+
+        action_unmatched = QAction("Show Unmatched Descriptors", self)
+        action_unmatched.setCheckable(True)
+        action_unmatched.triggered.connect(self.update_frames)
+        view_menu.addAction(action_unmatched)
+        self.view_action_group.addAction(action_unmatched)
+
+        self.view_mode_button.setMenu(view_menu)
+        controls_layout.addWidget(self.view_mode_button)
+
         layout.addLayout(controls_layout)
 
         # Match info label (below controls, centered)
         self.match_info_label = QLabel()
         self.match_info_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
         layout.addWidget(self.match_info_label)
-
-        # Visualization options
-        vis_options_layout = QHBoxLayout()
-        vis_options_layout.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        vis_options_layout.addWidget(QLabel("View Mode:"))
-        self.visualization_mode_combo = QComboBox()
-        self.visualization_mode_combo.addItems([
-            "Images Only",
-            "Show Matches",
-            "Show Unmatched Descriptors"
-        ])
-        self.visualization_mode_combo.currentIndexChanged.connect(self.update_frames)
-        vis_options_layout.addWidget(self.visualization_mode_combo)
-        layout.addLayout(vis_options_layout)
 
         # Setup playback timer
         self.playback_timer = QTimer()
@@ -437,8 +453,15 @@ class MatchVisualizer(QMainWindow):
         # Update slider max width on resize
         self.resizeEvent = self._on_resize
 
+    def get_current_view_mode(self):
+        checked_action = self.view_action_group.checkedAction()
+        if checked_action:
+            return checked_action.text()
+        return "Images Only"  # Default
+
     def update_frames(self):
-        self.request_frame.emit(self.current_frame, self.visualization_mode_combo.currentText())
+        mode = self.get_current_view_mode()
+        self.request_frame.emit(self.current_frame, mode)
 
     @pyqtSlot(int, str, object, object, str)
     def update_ui_from_worker(self, frame_index, mode, img1_data, img2_data, info_text):
