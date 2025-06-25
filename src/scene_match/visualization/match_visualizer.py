@@ -346,7 +346,6 @@ class MatchVisualizer(QMainWindow):
         self.frame_slider.setMinimum(0)
         self.frame_slider.setMaximum(self.total_frames - 1)
         self.frame_slider.valueChanged.connect(self.set_frame)
-        # Set min width to total button width (5*48 + 1*64 = 304), max width to 50% of window
         self.frame_slider.setMinimumWidth(304)
         self.frame_slider.setMaximumWidth(int(self.width() * 0.5))
         self.frame_slider.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
@@ -467,23 +466,25 @@ class MatchVisualizer(QMainWindow):
 
         layout.addLayout(controls_layout)
 
-        # Descriptor size slider
-        descriptor_size_layout = QHBoxLayout()
+        # Descriptor size slider (in a container for show/hide)
+        self.descriptor_size_container = QWidget()
+        descriptor_size_layout = QHBoxLayout(self.descriptor_size_container)
         descriptor_size_layout.setAlignment(Qt.AlignmentFlag.AlignCenter)
         descriptor_size_layout.setSpacing(10)
         descriptor_size_layout.addWidget(QLabel("Min Descriptor Size:"))
 
         self.descriptor_size_slider = QSlider(Qt.Orientation.Horizontal)
         self.descriptor_size_slider.setMinimum(0)
-        self.descriptor_size_slider.setMaximum(100)
-        self.descriptor_size_slider.setValue(0)
+        self.descriptor_size_slider.setMaximum(10)
+        self.descriptor_size_slider.setValue(4)
         self.descriptor_size_slider.setFixedWidth(200)
         self.descriptor_size_slider.valueChanged.connect(self._on_descriptor_size_change)
         descriptor_size_layout.addWidget(self.descriptor_size_slider)
 
-        self.descriptor_size_label = QLabel("0 px")
+        self.descriptor_size_label = QLabel("0")
         descriptor_size_layout.addWidget(self.descriptor_size_label)
-        layout.addLayout(descriptor_size_layout)
+        layout.addWidget(self.descriptor_size_container)
+        self.descriptor_size_container.hide()  # Hide by default
 
         # Match info label (below controls, centered)
         self.match_info_label = QLabel()
@@ -499,7 +500,7 @@ class MatchVisualizer(QMainWindow):
         self.resizeEvent = self._on_resize
 
     def _on_descriptor_size_change(self, value):
-        self.descriptor_size_label.setText(f"{value} px")
+        self.descriptor_size_label.setText(f"{value}")
         
         was_playing = self.is_playing
         if was_playing:
@@ -524,6 +525,11 @@ class MatchVisualizer(QMainWindow):
     def update_frames(self):
         mode = self.get_current_view_mode()
         min_size = self.descriptor_size_slider.value()
+        # Show/hide descriptor slider based on mode
+        if mode == "Show Unmatched Descriptors":
+            self.descriptor_size_container.show()
+        else:
+            self.descriptor_size_container.hide()
         self.request_frame.emit(self.current_frame, mode, min_size)
 
     @pyqtSlot(int, str, object, object, str)
@@ -610,6 +616,37 @@ class MatchVisualizer(QMainWindow):
         self.thread.quit()
         self.thread.wait()
         super().closeEvent(event)
+
+    def keyPressEvent(self, event):
+        key = event.key()
+        # For bracket keys, you may want to keep your custom logic
+        if key == Qt.Key.Key_Space:
+            self.toggle_playback()
+        elif key == Qt.Key.Key_Period:
+            self.next_frame_manual()
+        elif key == Qt.Key.Key_Comma:
+            self.prev_frame()
+        elif key == Qt.Key.Key_BracketRight:
+            self.faster_speed()
+        elif key == Qt.Key.Key_BracketLeft:
+            self.slower_speed()
+        elif key == Qt.Key.Key_M:
+            self.toggle_view_mode()
+        else:
+            super().keyPressEvent(event)
+
+    def toggle_view_mode(self):
+        # Cycle through the three view modes
+        actions = self.view_action_group.actions()
+        checked = self.view_action_group.checkedAction()
+        if checked is None:
+            actions[0].setChecked(True)
+            self.update_frames()
+            return
+        idx = actions.index(checked)
+        next_idx = (idx + 1) % len(actions)
+        actions[next_idx].setChecked(True)
+        self.update_frames()
 
 
 def visualize_matches(matcher: FrameMatcher, video_path: str | Path):

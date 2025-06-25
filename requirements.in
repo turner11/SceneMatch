@@ -7,3 +7,4 @@ rich-click>=1.7.0
 reactivex>=4.0.4
 pyqt6
 orjson
+superqt
