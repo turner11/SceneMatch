@@ -4,17 +4,93 @@ from pathlib import Path
 import cv2
 import numpy as np
 from PyQt6.QtCore import Qt, QTimer, QObject, QThread, pyqtSignal, pyqtSlot
-from PyQt6.QtGui import QImage, QPixmap
+from PyQt6.QtGui import QImage, QPixmap, QAction, QActionGroup
 from PyQt6.QtWidgets import (QApplication, QMainWindow, QWidget, QVBoxLayout,
                              QHBoxLayout, QPushButton, QLabel, QSlider, QFileDialog, QSizePolicy, QCheckBox,
-                             QStackedLayout, QComboBox, QGraphicsView, QGraphicsScene, QGraphicsPixmapItem)
+                             QStackedLayout, QComboBox, QGraphicsView, QGraphicsScene, QGraphicsPixmapItem,
+                             QMessageBox)
 
 from scene_match.scene_lib.frame_matcher import FrameMatch, FrameMatcher
-
 
 # import numpy as np
 # from ..imaging.reader import get_stream
 # from ..imaging.stream_types import StreamParams
+
+
+DARK_STYLESHEET = """
+    QMainWindow, QWidget {
+        background-color: #2E2E2E;
+        color: #E0E0E0;
+        font-family: "Segoe UI", "Frutiger", "Frutiger Linotype", "Dejavu Sans", "Helvetica Neue", "Arial", sans-serif;
+    }
+    QGraphicsView {
+        border: 1px solid #454545;
+        background-color: #1E1E1E;
+    }
+    QLabel {
+        background-color: transparent;
+        border: none;
+    }
+    QLabel[level="h3"] {
+        color: #CCCCCC;
+        font-size: 16px;
+        font-weight: bold;
+    }
+    QPushButton {
+        background-color: #4A4A4A;
+        color: #E0E0E0;
+        border: 1px solid #555555;
+        border-radius: 4px;
+        padding: 5px;
+        font-size: 18px;
+    }
+    QPushButton:hover {
+        background-color: #5A5A5A;
+        border-color: #666666;
+    }
+    QPushButton:pressed {
+        background-color: #3A3A3A;
+    }
+    QPushButton#PlayButton {
+        font-size: 28px;
+        padding-bottom: 4px; /* Center the icon vertically */
+    }
+    QSlider::groove:horizontal {
+        border: 1px solid #454545;
+        height: 4px;
+        background: #3E3E3E;
+        margin: 2px 0;
+    }
+    QSlider::handle:horizontal {
+        background: #8A8A8A;
+        border: 1px solid #999999;
+        width: 16px;
+        height: 16px;
+        margin: -6px 0;
+        border-radius: 8px;
+    }
+    QComboBox {
+        selection-background-color: #6A6A6A;
+        background-color: #4A4A4A;
+        border: 1px solid #555555;
+        border-radius: 4px;
+        padding: 5px;
+    }
+    QComboBox::drop-down {
+        subcontrol-origin: padding;
+        subcontrol-position: top right;
+        width: 20px;
+        border-left-width: 1px;
+        border-left-color: #555555;
+        border-left-style: solid;
+    }
+    QComboBox QAbstractItemView {
+        background-color: #4A4A4A;
+        border: 1px solid #555555;
+        selection-background-color: #6A6A6A;
+        color: #E0E0E0;
+    }
+"""
 
 
 class FrameProcessorWorker(QObject):
@@ -73,12 +149,12 @@ class FrameProcessorWorker(QObject):
                 else:  # Images Only
                     img1_data = current_frame_bgr
                     img2_data = ref_frame_bgr
-        else: # No match
+        else:  # No match
             if mode == "Show Unmatched Descriptors":
                 kp1, _, _ = self.matcher.get_detailed_matches(frame_meta, frame_meta)
                 img1_data = cv2.drawKeypoints(current_frame_bgr, kp1, None, color=(0, 255, 0),
                                               flags=cv2.DRAW_MATCHES_FLAGS_DRAW_RICH_KEYPOINTS)
-            else: # Images Only or Show Matches (with no match)
+            else:  # Images Only or Show Matches (with no match)
                 img1_data = current_frame_bgr
 
         self.frame_processed.emit(frame_index, mode, img1_data, img2_data, info_text)
@@ -159,14 +235,60 @@ class MatchVisualizer(QMainWindow):
 
         self.current_frame = 0
         self.is_playing = False
-        
+
         cap = cv2.VideoCapture(str(self.video_path))
         self.total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
         self.fps = cap.get(cv2.CAP_PROP_FPS)
         cap.release()
 
         self.init_ui()
+        self.init_menu_bar()
         self.setup_worker()
+
+    def init_menu_bar(self):
+        menu_bar = self.menuBar()
+
+        # File Menu
+        file_menu = menu_bar.addMenu("&File")
+        open_videos_action = QAction("Specify Video Inputs...", self)
+        open_videos_action.triggered.connect(self._show_video_input_info)
+        file_menu.addAction(open_videos_action)
+
+        # Settings Menu
+        settings_menu = menu_bar.addMenu("&Settings")
+        theme_menu = settings_menu.addMenu("Theme")
+
+        theme_group = QActionGroup(self)
+        theme_group.setExclusive(True)
+
+        dark_action = QAction("Dark", self)
+        dark_action.setCheckable(True)
+        dark_action.setChecked(True)  # Default to dark
+        dark_action.triggered.connect(lambda: self._set_theme("dark"))
+        theme_menu.addAction(dark_action)
+        theme_group.addAction(dark_action)
+
+        light_action = QAction("Light", self)
+        light_action.setCheckable(True)
+        light_action.triggered.connect(lambda: self._set_theme("light"))
+        theme_menu.addAction(light_action)
+        theme_group.addAction(light_action)
+
+    def _set_theme(self, theme_name):
+        app = QApplication.instance()
+        if theme_name == "dark":
+            app.setStyleSheet(DARK_STYLESHEET)
+        else:
+            app.setStyleSheet("")  # Use default platform style
+
+    def _show_video_input_info(self):
+        QMessageBox.information(
+            self,
+            "Specify Video Inputs",
+            "This feature is under development.\\n\\n"
+            "For now, please specify the video inputs via the command line when launching the application.",
+            QMessageBox.StandardButton.Ok
+        )
 
     def setup_worker(self):
         self.thread = QThread()
@@ -179,7 +301,7 @@ class MatchVisualizer(QMainWindow):
         self.request_frame.connect(self.worker.process_frame)
 
         self.thread.start()
-        
+
     def init_ui(self):
         self.setWindowTitle('Match Visualizer')
         self.setGeometry(100, 100, 1600, 900)
@@ -215,7 +337,8 @@ class MatchVisualizer(QMainWindow):
 
         # Comparing video layout
         comparing_video_layout = QVBoxLayout()
-        comparing_header = QLabel("<h3>Comparing Video</h3>")
+        comparing_header = QLabel("Comparing Video")
+        comparing_header.setProperty("level", "h3")
         comparing_header.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.current_label = ZoomableGraphicsView()
         comparing_video_layout.addWidget(comparing_header)
@@ -224,7 +347,8 @@ class MatchVisualizer(QMainWindow):
 
         # Reference video layout
         reference_video_layout = QVBoxLayout()
-        reference_header = QLabel("<h3>Reference Video (Index)</h3>")
+        reference_header = QLabel("Reference Video (Index)")
+        reference_header.setProperty("level", "h3")
         reference_header.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.match_label = ZoomableGraphicsView()
         reference_video_layout.addWidget(reference_header)
@@ -262,6 +386,7 @@ class MatchVisualizer(QMainWindow):
         controls_layout.addWidget(self.slower_button)
 
         self.play_button = QPushButton('▶️')
+        self.play_button.setObjectName("PlayButton")
         self.play_button.setToolTip('Play/Pause')
         self.play_button.setFixedSize(64, 64)
         self.play_button.clicked.connect(self.toggle_playback)
@@ -330,7 +455,7 @@ class MatchVisualizer(QMainWindow):
         if mode == "Show Matches":
             self.view_stack.setCurrentIndex(1)
             self.descriptor_label.setImage(to_pixmap(img1_data))
-        else: # Images Only and Show Unmatched
+        else:  # Images Only and Show Unmatched
             self.view_stack.setCurrentIndex(0)
             self.current_label.setImage(to_pixmap(img1_data))
             self.match_label.setImage(to_pixmap(img2_data))
@@ -339,12 +464,12 @@ class MatchVisualizer(QMainWindow):
         self.frame_slider.blockSignals(True)
         self.frame_slider.setValue(self.current_frame)
         self.frame_slider.blockSignals(False)
-        
+
         # Continue playback if active
         if self.is_playing and self.current_frame < self.total_frames - 1:
             interval = int(1000 / self.fps) if self.fps > 0 else 33
             self.playback_timer.start(interval)
-        elif self.is_playing: # Reached end of video
+        elif self.is_playing:  # Reached end of video
             self.stop_playback()
 
     def stop_playback(self):
@@ -356,7 +481,7 @@ class MatchVisualizer(QMainWindow):
         self.is_playing = not self.is_playing
         self.play_button.setText('⏸️' if self.is_playing else '▶️')
         if self.is_playing:
-            self.next_frame_playback() # Kick off the playback loop
+            self.next_frame_playback()  # Kick off the playback loop
         else:
             self.playback_timer.stop()
 
@@ -406,15 +531,17 @@ class MatchVisualizer(QMainWindow):
 def visualize_matches(matcher: FrameMatcher, video_path: str | Path):
     """
     Launch the match visualizer application.
-    
+
     Args:
         matcher: FrameMatcher instance with built index
         video_path: Path to the video file to analyze
     """
-    app = QApplication(sys.argv)
+    app = QApplication.instance()  # Should already exist
+    if app and not app.styleSheet():
+        app.setStyleSheet(DARK_STYLESHEET)
+
     visualizer = MatchVisualizer(matcher, video_path)
     visualizer.show()
-    sys.exit(app.exec())
 
 
 if __name__ == '__main__':
@@ -427,5 +554,8 @@ if __name__ == '__main__':
 
     args = parser.parse_args()
 
+    app = QApplication(sys.argv)
+    app.setStyleSheet(DARK_STYLESHEET) # Set dark theme by default
     matcher = FrameMatcher.deserialize(args.matcher)
     visualize_matches(matcher, args.video)
+    sys.exit(app.exec())
