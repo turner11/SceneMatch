@@ -196,7 +196,12 @@ cython_debug/
 /.idea/**
 /.cursor/**
 
+index.faiss
+metadata.json
+**/temp_**/**
+
 /Assests/**
 *.pyc
 *.pyi
+
 

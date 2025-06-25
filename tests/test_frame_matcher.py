@@ -8,7 +8,7 @@ import pytest
 import numpy as np
 import cv2
 
-from scene_match.lib import frame_matcher as fm
+from scene_match.scene_lib import frame_matcher as fm
 
 
 def create_test_video(filename: str, num_frames: int = 30) -> None:

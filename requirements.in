@@ -2,6 +2,9 @@ opencv-python>=4.8.0
 numpy>=1.24.0
 faiss-cpu>=1.7.4
 python-dotenv>=1.0.0
-pytest>=7.4.0
 coloredlogs>=6.7.0
-rich-click>=1.7.0 
+rich-click>=1.7.0
+reactivex>=4.0.4
+pyqt6
+orjson
+superqt
