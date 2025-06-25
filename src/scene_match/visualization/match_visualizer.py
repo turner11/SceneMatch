@@ -386,7 +386,19 @@ class MatchVisualizer(QMainWindow):
         central_widget = QWidget()
         self.setCentralWidget(central_widget)
         layout = QVBoxLayout(central_widget)
-        self.setStatusBar(QStatusBar(self))
+
+        # --- Status bar with 3 sections ---
+        status_bar = QStatusBar(self)
+        self.setStatusBar(status_bar)
+        self.status_feedback = QLabel()
+        self.status_match_info = QLabel()
+        self.status_match_info.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.status_speed = QLabel()
+        self.status_speed.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
+        status_bar.addWidget(self.status_feedback, 1)
+        status_bar.addPermanentWidget(self.status_match_info, 2)
+        status_bar.addPermanentWidget(self.status_speed, 1)
+        # --- End status bar ---
 
         # Frame slider (above controls)
         slider_layout = QHBoxLayout()
@@ -492,10 +504,6 @@ class MatchVisualizer(QMainWindow):
         self.next_button.clicked.connect(self.next_frame_manual)
         controls_layout.addWidget(self.next_button)
 
-        self.speed_label = QLabel(f'Speed: {self.jump_size}x')
-        self.speed_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        controls_layout.addWidget(self.speed_label)
-
         # View Mode Dropdown Button
         self.view_mode_button = QPushButton("👁️ View")
         self.view_mode_button.setToolTip("Change Visualization Mode (Shortcut: M)")
@@ -546,11 +554,6 @@ class MatchVisualizer(QMainWindow):
         layout.addWidget(self.descriptor_size_container)
         self.descriptor_size_container.hide()  # Hide by default
 
-        # Match info label (below controls, centered)
-        self.match_info_label = QLabel()
-        self.match_info_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        layout.addWidget(self.match_info_label)
-
         # Setup playback timer
         self.playback_timer = QTimer()
         self.playback_timer.setSingleShot(True)
@@ -560,6 +563,8 @@ class MatchVisualizer(QMainWindow):
         self.resizeEvent = self._on_resize
 
         self._connect_sync_signals()
+
+        self.status_speed.setText(f'Speed: {self.jump_size}x')
 
     def _connect_sync_signals(self):
         # Disconnect first to avoid duplicates
@@ -586,7 +591,8 @@ class MatchVisualizer(QMainWindow):
         self.show_status_message(f"View Mode: {action.text()}")
 
     def show_status_message(self, message, timeout=2000):
-        self.statusBar().showMessage(message, timeout)
+        self.status_feedback.setText(message)
+        QTimer.singleShot(timeout, lambda: self.status_feedback.setText(""))
 
     def _on_descriptor_size_change(self, value):
         self.descriptor_size_label.setText(f"{value}")
@@ -623,7 +629,21 @@ class MatchVisualizer(QMainWindow):
 
     @pyqtSlot(int, str, object, object, str)
     def update_ui_from_worker(self, frame_index, mode, img1_data, img2_data, info_text):
-        self.match_info_label.setText(info_text)
+        # Format match info as a single line
+        if info_text and 'Match:' in info_text:
+            # Parse the multiline info_text
+            lines = info_text.splitlines()
+            if len(lines) >= 3:
+                # e.g. Match: Frame 1 → Frame 2\nScore: 0.87\nFeatures: 45.0%
+                match_part = lines[0].replace('Match: ', '').replace('Frame ', '').replace('→ Frame ', '→')
+                score_part = lines[1].replace('Score: ', '')
+                features_part = lines[2].replace('Features: ', '')
+                single_line = f"Match: {match_part} | Score: {score_part} | Features: {features_part}"
+                self.status_match_info.setText(single_line)
+            else:
+                self.status_match_info.setText(' '.join(lines))
+        else:
+            self.status_match_info.setText(info_text.strip() if info_text else "")
 
         def to_pixmap(bgr_image):
             if bgr_image is None: return QPixmap()
@@ -666,12 +686,12 @@ class MatchVisualizer(QMainWindow):
 
     def faster_speed(self):
         self.jump_size += 1
-        self.speed_label.setText(f'Speed: {self.jump_size}x')
+        self.status_speed.setText(f'Speed: {self.jump_size}x')
 
     def slower_speed(self):
         if self.jump_size > 1:
             self.jump_size -= 1
-        self.speed_label.setText(f'Speed: {self.jump_size}x')
+        self.status_speed.setText(f'Speed: {self.jump_size}x')
 
     def next_frame_playback(self):
         if self.current_frame < self.total_frames - 1:
@@ -712,20 +732,28 @@ class MatchVisualizer(QMainWindow):
         # For bracket keys, you may want to keep your custom logic
         if key == Qt.Key.Key_Space:
             self.toggle_playback()
+            self.show_status_message("Play/Pause (Space)")
         elif key == Qt.Key.Key_Period:
             self.next_frame_manual()
+            self.show_status_message("Next Frame (.)")
         elif key == Qt.Key.Key_Comma:
             self.prev_frame()
+            self.show_status_message("Previous Frame (,)")
         elif key == Qt.Key.Key_BracketRight:
             self.faster_speed()
+            self.show_status_message("Faster (])")
         elif key == Qt.Key.Key_BracketLeft:
             self.slower_speed()
+            self.show_status_message("Slower ([)")
         elif key == Qt.Key.Key_M:
             self.toggle_view_mode()
+            self.show_status_message("Toggle View Mode (M)")
         elif key == Qt.Key.Key_R:
             self.reset_views()
+            self.show_status_message("Views Reset (R)")
         elif key == Qt.Key.Key_S:
             self.sync_checkbox.toggle()
+            self.show_status_message("Toggle Sync (S)")
         else:
             super().keyPressEvent(event)
 
