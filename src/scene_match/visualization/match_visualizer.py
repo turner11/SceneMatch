@@ -6,7 +6,7 @@ from PyQt6.QtCore import Qt, QTimer
 from PyQt6.QtGui import QImage, QPixmap
 from PyQt6.QtWidgets import (QApplication, QMainWindow, QWidget, QVBoxLayout,
                              QHBoxLayout, QPushButton, QLabel, QSlider, QFileDialog, QSizePolicy, QCheckBox,
-                             QStackedLayout)
+                             QStackedLayout, QComboBox)
 
 from scene_match.scene_lib.frame_matcher import FrameMatch, FrameMatcher
 
@@ -18,15 +18,11 @@ from scene_match.scene_lib.frame_matcher import FrameMatch, FrameMatcher
 
 class MatchVisualizer(QMainWindow):
 
-    @property
-    def show_descriptors(self) -> bool:
-        return self.visualize_descriptors_checkbox.isChecked()
-
     def __init__(self, matcher: FrameMatcher, video_path: str | Path):
         super().__init__()
         self.matcher = matcher
         self.video_path = Path(video_path).resolve().absolute()
-        self.jump_size = 1
+        self.jump_size = 10
 
         self.video_path_ref = Path(matcher.video_source).resolve().absolute()
 
@@ -164,9 +160,18 @@ class MatchVisualizer(QMainWindow):
         layout.addWidget(self.match_info_label)
 
         # Visualization options
-        self.visualize_descriptors_checkbox = QCheckBox("Show Descriptors")
-        self.visualize_descriptors_checkbox.stateChanged.connect(self.update_frames)
-        layout.addWidget(self.visualize_descriptors_checkbox, alignment=Qt.AlignmentFlag.AlignCenter)
+        vis_options_layout = QHBoxLayout()
+        vis_options_layout.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        vis_options_layout.addWidget(QLabel("View Mode:"))
+        self.visualization_mode_combo = QComboBox()
+        self.visualization_mode_combo.addItems([
+            "Images Only",
+            "Show Matches",
+            "Show Unmatched Descriptors"
+        ])
+        self.visualization_mode_combo.currentIndexChanged.connect(self.update_frames)
+        vis_options_layout.addWidget(self.visualization_mode_combo)
+        layout.addLayout(vis_options_layout)
 
         # Setup playback timer
         self.playback_timer = QTimer()
@@ -189,6 +194,8 @@ class MatchVisualizer(QMainWindow):
         frame_meta = self.matcher.save_frame_features(current_frame_bgr, self.current_frame)
         self.current_match = self.matcher.match(frame_meta)
 
+        mode = self.visualization_mode_combo.currentText()
+
         if self.current_match:
             # Get reference frame
             ref_frame_meta = self.current_match.frame_reference
@@ -200,7 +207,7 @@ class MatchVisualizer(QMainWindow):
             if ret:
                 ref_frame_rgb = cv2.cvtColor(ref_frame_bgr, cv2.COLOR_BGR2RGB)
 
-                if self.show_descriptors:
+                if mode == "Show Matches":
                     self.view_stack.setCurrentIndex(1)
                     # Draw matches
                     kp1, kp2, matches = self.matcher.get_detailed_matches(frame_meta, ref_frame_meta)
@@ -217,7 +224,35 @@ class MatchVisualizer(QMainWindow):
                         self.descriptor_label.width(), self.descriptor_label.height(),
                         Qt.AspectRatioMode.KeepAspectRatio, Qt.TransformationMode.SmoothTransformation
                     ))
-                else:
+                elif mode == "Show Unmatched Descriptors":
+                    self.view_stack.setCurrentIndex(0)
+
+                    # Get matches to find unmatched keypoints
+                    kp1, kp2, matches = self.matcher.get_detailed_matches(frame_meta, ref_frame_meta)
+                    matched_kp1_indices = {m.queryIdx for m in matches}
+                    unmatched_kp1 = [kp for i, kp in enumerate(kp1) if i not in matched_kp1_indices]
+
+                    # Draw unmatched keypoints on the current frame
+                    img_with_unmatched_kp = cv2.drawKeypoints(current_frame_bgr, unmatched_kp1, None, color=(0, 0, 255),
+                                                              flags=cv2.DRAW_MATCHES_FLAGS_DRAW_RICH_KEYPOINTS)
+                    img_with_unmatched_kp_rgb = cv2.cvtColor(img_with_unmatched_kp, cv2.COLOR_BGR2RGB)
+
+                    # Display modified current frame
+                    h, w, ch = img_with_unmatched_kp_rgb.shape
+                    q_img = QImage(img_with_unmatched_kp_rgb.data, w, h, ch * w, QImage.Format.Format_RGB888)
+                    self.current_label.setPixmap(QPixmap.fromImage(q_img).scaled(
+                        self.current_label.width(), self.current_label.height(),
+                        Qt.AspectRatioMode.KeepAspectRatio, Qt.TransformationMode.SmoothTransformation
+                    ))
+
+                    # Display normal reference frame
+                    match_qimg = QImage(ref_frame_rgb.data, ref_frame_rgb.shape[1], ref_frame_rgb.shape[0],
+                                        ref_frame_rgb.strides[0], QImage.Format.Format_RGB888)
+                    self.match_label.setPixmap(QPixmap.fromImage(match_qimg).scaled(
+                        self.match_label.width(), self.match_label.height(), Qt.AspectRatioMode.KeepAspectRatio,
+                        Qt.TransformationMode.SmoothTransformation))
+
+                else:  # Images Only
                     self.view_stack.setCurrentIndex(0)
                     # Display current frame
                     current_qimg = QImage(current_frame_rgb.data, current_frame_rgb.shape[1],
@@ -242,11 +277,28 @@ class MatchVisualizer(QMainWindow):
         else:
             # No match found
             self.match_info_label.setText("No match found")
-            if self.show_descriptors:
+            if mode == "Show Matches":
                 self.view_stack.setCurrentIndex(1)
                 self.descriptor_label.clear()
                 self.descriptor_label.setText("No match to visualize")
-            else:
+            elif mode == "Show Unmatched Descriptors":
+                self.view_stack.setCurrentIndex(0)
+                self.match_label.clear()
+
+                # Draw all keypoints on current frame since none are matched
+                kp1 = frame_meta.keypoints
+                img_with_all_kp = cv2.drawKeypoints(current_frame_bgr, kp1, None, color=(0, 255, 0),
+                                                    flags=cv2.DRAW_MATCHES_FLAGS_DRAW_RICH_KEYPOINTS)
+                img_with_all_kp_rgb = cv2.cvtColor(img_with_all_kp, cv2.COLOR_BGR2RGB)
+
+                h, w, ch = img_with_all_kp_rgb.shape
+                q_img = QImage(img_with_all_kp_rgb.data, w, h, ch * w, QImage.Format.Format_RGB888)
+                self.current_label.setPixmap(QPixmap.fromImage(q_img).scaled(
+                    self.current_label.width(), self.current_label.height(),
+                    Qt.AspectRatioMode.KeepAspectRatio, Qt.TransformationMode.SmoothTransformation
+                ))
+
+            else:  # Images Only
                 self.view_stack.setCurrentIndex(0)
                 self.match_label.clear()
                 current_qimg = QImage(current_frame_rgb.data, current_frame_rgb.shape[1],
