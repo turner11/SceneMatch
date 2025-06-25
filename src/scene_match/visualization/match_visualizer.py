@@ -11,6 +11,7 @@ from PyQt6.QtWidgets import (QApplication, QMainWindow, QWidget, QVBoxLayout,
                              QMessageBox, QMenu)
 
 from scene_match.scene_lib.frame_matcher import FrameMatch, FrameMatcher
+from scene_match.scene_lib.match_types import FrameMetadata
 
 # import numpy as np
 # from ..imaging.reader import get_stream
@@ -97,7 +98,7 @@ class FrameProcessorWorker(QObject):
     frame_processed = pyqtSignal(int, str, object, object, str)  # frame_idx, mode, img1, img2, info_text
     ready = pyqtSignal()
 
-    def __init__(self, matcher, video_path, video_path_ref):
+    def __init__(self, matcher: FrameMatcher, video_path, video_path_ref):
         super().__init__()
         self.matcher = matcher
         self.video_path = video_path
@@ -111,15 +112,40 @@ class FrameProcessorWorker(QObject):
         self.ref_cap = cv2.VideoCapture(str(self.video_path_ref))
         self.ready.emit()
 
-    @pyqtSlot(int, str)
-    def process_frame(self, frame_index, mode):
+    @pyqtSlot(int, str, int)
+    def process_frame(self, frame_index, mode, min_size_threshold):
         self.cap.set(cv2.CAP_PROP_POS_FRAMES, frame_index)
         ret, current_frame_bgr = self.cap.read()
         if not ret:
             return
 
-        frame_meta = self.matcher.save_frame_features(current_frame_bgr, frame_index)
-        current_match = self.matcher.match(frame_meta)
+        # Always get the full set of features from the frame
+        frame_meta_unfiltered = self.matcher.save_frame_features(current_frame_bgr, frame_index)
+
+        # Apply size filtering if a threshold is set
+        if min_size_threshold > 0:
+            filtered_indices = [i for i, kp in enumerate(frame_meta_unfiltered.keypoints) if
+                                kp.size >= min_size_threshold]
+
+            # Ensure we don't have an empty list of features, which can cause errors
+            if not filtered_indices:
+                filtered_keypoints = tuple()
+                filtered_features = np.array([], dtype=np.float32).reshape(0, 128)
+            else:
+                filtered_keypoints = tuple(frame_meta_unfiltered.keypoints[i] for i in filtered_indices)
+                filtered_features = frame_meta_unfiltered.features[filtered_indices]
+
+            frame_meta = FrameMetadata(
+                frame_index=frame_meta_unfiltered.frame_index,
+                timestamp=frame_meta_unfiltered.timestamp,
+                keypoints=filtered_keypoints,
+                features=filtered_features
+            )
+        else:
+            frame_meta = frame_meta_unfiltered
+
+        # Proceed with matching using the (potentially filtered) frame metadata
+        current_match = self.matcher.match(frame_meta) if frame_meta.features.size > 0 else None
 
         img1_data, img2_data, info_text = None, None, "No match found"
 
@@ -151,7 +177,8 @@ class FrameProcessorWorker(QObject):
                     img2_data = ref_frame_bgr
         else:  # No match
             if mode == "Show Unmatched Descriptors":
-                kp1, _, _ = self.matcher.get_detailed_matches(frame_meta, frame_meta)
+                # Show keypoints from the filtered set
+                kp1 = frame_meta.keypoints
                 img1_data = cv2.drawKeypoints(current_frame_bgr, kp1, None, color=(0, 255, 0),
                                               flags=cv2.DRAW_MATCHES_FLAGS_DRAW_RICH_KEYPOINTS)
             else:  # Images Only or Show Matches (with no match)
@@ -218,7 +245,7 @@ class ZoomableGraphicsView(QGraphicsView):
 
 
 class MatchVisualizer(QMainWindow):
-    request_frame = pyqtSignal(int, str)
+    request_frame = pyqtSignal(int, str, int)
 
     def __init__(self, matcher: FrameMatcher, video_path: str | Path):
         super().__init__()
@@ -440,6 +467,24 @@ class MatchVisualizer(QMainWindow):
 
         layout.addLayout(controls_layout)
 
+        # Descriptor size slider
+        descriptor_size_layout = QHBoxLayout()
+        descriptor_size_layout.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        descriptor_size_layout.setSpacing(10)
+        descriptor_size_layout.addWidget(QLabel("Min Descriptor Size:"))
+
+        self.descriptor_size_slider = QSlider(Qt.Orientation.Horizontal)
+        self.descriptor_size_slider.setMinimum(0)
+        self.descriptor_size_slider.setMaximum(100)
+        self.descriptor_size_slider.setValue(0)
+        self.descriptor_size_slider.setFixedWidth(200)
+        self.descriptor_size_slider.valueChanged.connect(self._on_descriptor_size_change)
+        descriptor_size_layout.addWidget(self.descriptor_size_slider)
+
+        self.descriptor_size_label = QLabel("0 px")
+        descriptor_size_layout.addWidget(self.descriptor_size_label)
+        layout.addLayout(descriptor_size_layout)
+
         # Match info label (below controls, centered)
         self.match_info_label = QLabel()
         self.match_info_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
@@ -453,6 +498,23 @@ class MatchVisualizer(QMainWindow):
         # Update slider max width on resize
         self.resizeEvent = self._on_resize
 
+    def _on_descriptor_size_change(self, value):
+        self.descriptor_size_label.setText(f"{value} px")
+        
+        was_playing = self.is_playing
+        if was_playing:
+            self.stop_playback()
+
+        self.update_frames()
+
+        if was_playing:
+            self.start_playback() # A new method to just start the loop
+            
+    def start_playback(self):
+        self.is_playing = True
+        self.play_button.setText('⏸️')
+        self.next_frame_playback()
+
     def get_current_view_mode(self):
         checked_action = self.view_action_group.checkedAction()
         if checked_action:
@@ -461,7 +523,8 @@ class MatchVisualizer(QMainWindow):
 
     def update_frames(self):
         mode = self.get_current_view_mode()
-        self.request_frame.emit(self.current_frame, mode)
+        min_size = self.descriptor_size_slider.value()
+        self.request_frame.emit(self.current_frame, mode, min_size)
 
     @pyqtSlot(int, str, object, object, str)
     def update_ui_from_worker(self, frame_index, mode, img1_data, img2_data, info_text):
@@ -501,12 +564,10 @@ class MatchVisualizer(QMainWindow):
         self.playback_timer.stop()
 
     def toggle_playback(self):
-        self.is_playing = not self.is_playing
-        self.play_button.setText('⏸️' if self.is_playing else '▶️')
         if self.is_playing:
-            self.next_frame_playback()  # Kick off the playback loop
+            self.stop_playback()
         else:
-            self.playback_timer.stop()
+            self.start_playback()
 
     def faster_speed(self):
         self.jump_size += 10
@@ -578,7 +639,7 @@ if __name__ == '__main__':
     args = parser.parse_args()
 
     app = QApplication(sys.argv)
-    app.setStyleSheet(DARK_STYLESHEET) # Set dark theme by default
+    app.setStyleSheet(DARK_STYLESHEET)  # Set dark theme by default
     matcher = FrameMatcher.deserialize(args.matcher)
     visualize_matches(matcher, args.video)
     sys.exit(app.exec())
