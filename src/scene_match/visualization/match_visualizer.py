@@ -2,11 +2,12 @@ import sys
 from pathlib import Path
 
 import cv2
-from PyQt6.QtCore import Qt, QTimer
+import numpy as np
+from PyQt6.QtCore import Qt, QTimer, QObject, QThread, pyqtSignal, pyqtSlot
 from PyQt6.QtGui import QImage, QPixmap
 from PyQt6.QtWidgets import (QApplication, QMainWindow, QWidget, QVBoxLayout,
                              QHBoxLayout, QPushButton, QLabel, QSlider, QFileDialog, QSizePolicy, QCheckBox,
-                             QStackedLayout, QComboBox)
+                             QStackedLayout, QComboBox, QGraphicsView, QGraphicsScene, QGraphicsPixmapItem)
 
 from scene_match.scene_lib.frame_matcher import FrameMatch, FrameMatcher
 
@@ -16,7 +17,132 @@ from scene_match.scene_lib.frame_matcher import FrameMatch, FrameMatcher
 # from ..imaging.stream_types import StreamParams
 
 
+class FrameProcessorWorker(QObject):
+    frame_processed = pyqtSignal(int, str, object, object, str)  # frame_idx, mode, img1, img2, info_text
+    ready = pyqtSignal()
+
+    def __init__(self, matcher, video_path, video_path_ref):
+        super().__init__()
+        self.matcher = matcher
+        self.video_path = video_path
+        self.video_path_ref = video_path_ref
+        self.cap = None
+        self.ref_cap = None
+
+    @pyqtSlot()
+    def setup_captures(self):
+        self.cap = cv2.VideoCapture(str(self.video_path))
+        self.ref_cap = cv2.VideoCapture(str(self.video_path_ref))
+        self.ready.emit()
+
+    @pyqtSlot(int, str)
+    def process_frame(self, frame_index, mode):
+        self.cap.set(cv2.CAP_PROP_POS_FRAMES, frame_index)
+        ret, current_frame_bgr = self.cap.read()
+        if not ret:
+            return
+
+        frame_meta = self.matcher.save_frame_features(current_frame_bgr, frame_index)
+        current_match = self.matcher.match(frame_meta)
+
+        img1_data, img2_data, info_text = None, None, "No match found"
+
+        if current_match:
+            ref_frame_meta = current_match.frame_reference
+            ref_frame_index = ref_frame_meta.frame_index
+            self.ref_cap.set(cv2.CAP_PROP_POS_FRAMES, ref_frame_index)
+            ret_ref, ref_frame_bgr = self.ref_cap.read()
+
+            info_text = (f"Match: Frame {frame_index} → Frame {ref_frame_index}\n"
+                         f"Score: {current_match.distance_score:.2f}\n"
+                         f"Features: {current_match.features_percentage:.1%}")
+
+            if ret_ref:
+                if mode == "Show Matches":
+                    kp1, kp2, matches = self.matcher.get_detailed_matches(frame_meta, ref_frame_meta)
+                    img1_data = cv2.drawMatches(
+                        current_frame_bgr, kp1, ref_frame_bgr, kp2, matches, None,
+                        flags=cv2.DrawMatchesFlags_NOT_DRAW_SINGLE_POINTS)
+                elif mode == "Show Unmatched Descriptors":
+                    kp1, kp2, matches = self.matcher.get_detailed_matches(frame_meta, ref_frame_meta)
+                    matched_kp1_indices = {m.queryIdx for m in matches}
+                    unmatched_kp1 = [kp for i, kp in enumerate(kp1) if i not in matched_kp1_indices]
+                    img1_data = cv2.drawKeypoints(current_frame_bgr, unmatched_kp1, None, color=(0, 0, 255),
+                                                  flags=cv2.DRAW_MATCHES_FLAGS_DRAW_RICH_KEYPOINTS)
+                    img2_data = ref_frame_bgr
+                else:  # Images Only
+                    img1_data = current_frame_bgr
+                    img2_data = ref_frame_bgr
+        else: # No match
+            if mode == "Show Unmatched Descriptors":
+                kp1, _, _ = self.matcher.get_detailed_matches(frame_meta, frame_meta)
+                img1_data = cv2.drawKeypoints(current_frame_bgr, kp1, None, color=(0, 255, 0),
+                                              flags=cv2.DRAW_MATCHES_FLAGS_DRAW_RICH_KEYPOINTS)
+            else: # Images Only or Show Matches (with no match)
+                img1_data = current_frame_bgr
+
+        self.frame_processed.emit(frame_index, mode, img1_data, img2_data, info_text)
+
+
+class ZoomableGraphicsView(QGraphicsView):
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self._scene = QGraphicsScene(self)
+        self.setScene(self._scene)
+        self.setTransformationAnchor(QGraphicsView.ViewportAnchor.AnchorUnderMouse)
+        self.setResizeAnchor(QGraphicsView.ViewportAnchor.AnchorViewCenter)
+        self.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        self.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        self.setDragMode(QGraphicsView.DragMode.ScrollHandDrag)
+        self._pixmap_item = None
+        self._has_been_fitted = False
+
+    def setImage(self, pixmap: QPixmap):
+        if pixmap.isNull():
+            if self._pixmap_item:
+                self._scene.removeItem(self._pixmap_item)
+                self._pixmap_item = None
+                self._scene.setSceneRect(self._scene.itemsBoundingRect())
+            return
+
+        if self._pixmap_item:
+            self._pixmap_item.setPixmap(pixmap)
+        else:
+            self._pixmap_item = QGraphicsPixmapItem(pixmap)
+            self._scene.addItem(self._pixmap_item)
+            self._has_been_fitted = False  # Ready for an initial fit
+
+        self._scene.setSceneRect(self._pixmap_item.boundingRect())
+
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+        if not self._has_been_fitted and self._pixmap_item:
+            self.fitInView(self._scene.sceneRect(), Qt.AspectRatioMode.KeepAspectRatio)
+            self._has_been_fitted = True
+
+    def wheelEvent(self, event):
+        zoom_in_factor = 1.25
+        zoom_out_factor = 1 / zoom_in_factor
+
+        old_pos = self.mapToScene(event.position().toPoint())
+
+        if event.angleDelta().y() > 0:
+            self.scale(zoom_in_factor, zoom_in_factor)
+        else:
+            self.scale(zoom_out_factor, zoom_out_factor)
+
+        new_pos = self.mapToScene(event.position().toPoint())
+        delta = new_pos - old_pos
+        self.translate(delta.x(), delta.y())
+
+    def mouseDoubleClickEvent(self, event):
+        if self._pixmap_item:
+            self.fitInView(self._scene.sceneRect(), Qt.AspectRatioMode.KeepAspectRatio)
+        super().mouseDoubleClickEvent(event)
+
+
 class MatchVisualizer(QMainWindow):
+    request_frame = pyqtSignal(int, str)
 
     def __init__(self, matcher: FrameMatcher, video_path: str | Path):
         super().__init__()
@@ -33,17 +159,27 @@ class MatchVisualizer(QMainWindow):
 
         self.current_frame = 0
         self.is_playing = False
-        self.current_match = None
-
-        # Initialize video capture
-        self.cap = cv2.VideoCapture(str(self.video_path))
-        self.ref_cap = cv2.VideoCapture(str(self.video_path))
-        self.total_frames = int(self.cap.get(cv2.CAP_PROP_FRAME_COUNT))
-        self.fps = self.cap.get(cv2.CAP_PROP_FPS)
+        
+        cap = cv2.VideoCapture(str(self.video_path))
+        self.total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+        self.fps = cap.get(cv2.CAP_PROP_FPS)
+        cap.release()
 
         self.init_ui()
-        self.update_frames()
+        self.setup_worker()
 
+    def setup_worker(self):
+        self.thread = QThread()
+        self.worker = FrameProcessorWorker(self.matcher, self.video_path, self.video_path_ref)
+        self.worker.moveToThread(self.thread)
+
+        self.thread.started.connect(self.worker.setup_captures)
+        self.worker.frame_processed.connect(self.update_ui_from_worker)
+        self.worker.ready.connect(self.update_frames)
+        self.request_frame.connect(self.worker.process_frame)
+
+        self.thread.start()
+        
     def init_ui(self):
         self.setWindowTitle('Match Visualizer')
         self.setGeometry(100, 100, 1600, 900)
@@ -74,15 +210,14 @@ class MatchVisualizer(QMainWindow):
         # Page 1: Normal two-video view
         normal_view_widget = QWidget()
         display_layout = QHBoxLayout(normal_view_widget)
-        display_layout.setSpacing(10)
+        display_layout.setSpacing(0)
+        display_layout.setContentsMargins(0, 0, 0, 0)
 
         # Comparing video layout
         comparing_video_layout = QVBoxLayout()
         comparing_header = QLabel("<h3>Comparing Video</h3>")
         comparing_header.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self.current_label = QLabel()
-        self.current_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self.current_label.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
+        self.current_label = ZoomableGraphicsView()
         comparing_video_layout.addWidget(comparing_header)
         comparing_video_layout.addWidget(self.current_label)
         display_layout.addLayout(comparing_video_layout)
@@ -91,9 +226,7 @@ class MatchVisualizer(QMainWindow):
         reference_video_layout = QVBoxLayout()
         reference_header = QLabel("<h3>Reference Video (Index)</h3>")
         reference_header.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self.match_label = QLabel()
-        self.match_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self.match_label.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
+        self.match_label = ZoomableGraphicsView()
         reference_video_layout.addWidget(reference_header)
         reference_video_layout.addWidget(self.match_label)
         display_layout.addLayout(reference_video_layout)
@@ -102,9 +235,7 @@ class MatchVisualizer(QMainWindow):
         # Page 2: Descriptor view
         descriptor_view_widget = QWidget()
         descriptor_layout = QHBoxLayout(descriptor_view_widget)
-        self.descriptor_label = QLabel()
-        self.descriptor_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self.descriptor_label.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
+        self.descriptor_label = ZoomableGraphicsView()
         descriptor_layout.addWidget(self.descriptor_label)
         self.view_stack.addWidget(descriptor_view_widget)
 
@@ -145,7 +276,7 @@ class MatchVisualizer(QMainWindow):
         self.next_button = QPushButton('⏭️')
         self.next_button.setToolTip('Next Frame')
         self.next_button.setFixedSize(48, 48)
-        self.next_button.clicked.connect(self.next_frame)
+        self.next_button.clicked.connect(self.next_frame_manual)
         controls_layout.addWidget(self.next_button)
 
         self.speed_label = QLabel(f'Skip: {self.jump_size} frames')
@@ -175,148 +306,57 @@ class MatchVisualizer(QMainWindow):
 
         # Setup playback timer
         self.playback_timer = QTimer()
-        self.playback_timer.timeout.connect(self.next_frame)
+        self.playback_timer.setSingleShot(True)
+        self.playback_timer.timeout.connect(self.next_frame_playback)
 
         # Update slider max width on resize
         self.resizeEvent = self._on_resize
 
     def update_frames(self):
-        # Get current frame
-        self.cap.set(cv2.CAP_PROP_POS_FRAMES, self.current_frame)
-        ret, current_frame_bgr = self.cap.read()
-        if not ret:
-            return
+        self.request_frame.emit(self.current_frame, self.visualization_mode_combo.currentText())
 
-        # Convert current frame to RGB
-        current_frame_rgb = cv2.cvtColor(current_frame_bgr, cv2.COLOR_BGR2RGB)
+    @pyqtSlot(int, str, object, object, str)
+    def update_ui_from_worker(self, frame_index, mode, img1_data, img2_data, info_text):
+        self.match_info_label.setText(info_text)
 
-        # Get match for current frame
-        frame_meta = self.matcher.save_frame_features(current_frame_bgr, self.current_frame)
-        self.current_match = self.matcher.match(frame_meta)
+        def to_pixmap(bgr_image):
+            if bgr_image is None: return QPixmap()
+            rgb_image = cv2.cvtColor(bgr_image, cv2.COLOR_BGR2RGB)
+            h, w, ch = rgb_image.shape
+            bytes_per_line = ch * w
+            q_img = QImage(rgb_image.data, w, h, bytes_per_line, QImage.Format.Format_RGB888)
+            return QPixmap.fromImage(q_img)
 
-        mode = self.visualization_mode_combo.currentText()
-
-        if self.current_match:
-            # Get reference frame
-            ref_frame_meta = self.current_match.frame_reference
-            ref_frame_index = ref_frame_meta.frame_index
-
-            self.ref_cap.set(cv2.CAP_PROP_POS_FRAMES, ref_frame_index)
-            ret, ref_frame_bgr = self.ref_cap.read()
-
-            if ret:
-                ref_frame_rgb = cv2.cvtColor(ref_frame_bgr, cv2.COLOR_BGR2RGB)
-
-                if mode == "Show Matches":
-                    self.view_stack.setCurrentIndex(1)
-                    # Draw matches
-                    kp1, kp2, matches = self.matcher.get_detailed_matches(frame_meta, ref_frame_meta)
-                    match_img = cv2.drawMatches(
-                        current_frame_bgr, kp1, ref_frame_bgr, kp2, matches, None,
-                        flags=cv2.DrawMatchesFlags_NOT_DRAW_SINGLE_POINTS
-                    )
-                    match_img_rgb = cv2.cvtColor(match_img, cv2.COLOR_BGR2RGB)
-
-                    # Display combined image in descriptor_label
-                    h, w, ch = match_img_rgb.shape
-                    q_img = QImage(match_img_rgb.data, w, h, ch * w, QImage.Format.Format_RGB888)
-                    self.descriptor_label.setPixmap(QPixmap.fromImage(q_img).scaled(
-                        self.descriptor_label.width(), self.descriptor_label.height(),
-                        Qt.AspectRatioMode.KeepAspectRatio, Qt.TransformationMode.SmoothTransformation
-                    ))
-                elif mode == "Show Unmatched Descriptors":
-                    self.view_stack.setCurrentIndex(0)
-
-                    # Get matches to find unmatched keypoints
-                    kp1, kp2, matches = self.matcher.get_detailed_matches(frame_meta, ref_frame_meta)
-                    matched_kp1_indices = {m.queryIdx for m in matches}
-                    unmatched_kp1 = [kp for i, kp in enumerate(kp1) if i not in matched_kp1_indices]
-
-                    # Draw unmatched keypoints on the current frame
-                    img_with_unmatched_kp = cv2.drawKeypoints(current_frame_bgr, unmatched_kp1, None, color=(0, 0, 255),
-                                                              flags=cv2.DRAW_MATCHES_FLAGS_DRAW_RICH_KEYPOINTS)
-                    img_with_unmatched_kp_rgb = cv2.cvtColor(img_with_unmatched_kp, cv2.COLOR_BGR2RGB)
-
-                    # Display modified current frame
-                    h, w, ch = img_with_unmatched_kp_rgb.shape
-                    q_img = QImage(img_with_unmatched_kp_rgb.data, w, h, ch * w, QImage.Format.Format_RGB888)
-                    self.current_label.setPixmap(QPixmap.fromImage(q_img).scaled(
-                        self.current_label.width(), self.current_label.height(),
-                        Qt.AspectRatioMode.KeepAspectRatio, Qt.TransformationMode.SmoothTransformation
-                    ))
-
-                    # Display normal reference frame
-                    match_qimg = QImage(ref_frame_rgb.data, ref_frame_rgb.shape[1], ref_frame_rgb.shape[0],
-                                        ref_frame_rgb.strides[0], QImage.Format.Format_RGB888)
-                    self.match_label.setPixmap(QPixmap.fromImage(match_qimg).scaled(
-                        self.match_label.width(), self.match_label.height(), Qt.AspectRatioMode.KeepAspectRatio,
-                        Qt.TransformationMode.SmoothTransformation))
-
-                else:  # Images Only
-                    self.view_stack.setCurrentIndex(0)
-                    # Display current frame
-                    current_qimg = QImage(current_frame_rgb.data, current_frame_rgb.shape[1],
-                                          current_frame_rgb.shape[0],
-                                          current_frame_rgb.strides[0], QImage.Format.Format_RGB888)
-                    self.current_label.setPixmap(QPixmap.fromImage(current_qimg).scaled(
-                        self.current_label.width(), self.current_label.height(), Qt.AspectRatioMode.KeepAspectRatio,
-                        Qt.TransformationMode.SmoothTransformation))
-
-                    # Display matched frame
-                    match_qimg = QImage(ref_frame_rgb.data, ref_frame_rgb.shape[1], ref_frame_rgb.shape[0],
-                                        ref_frame_rgb.strides[0], QImage.Format.Format_RGB888)
-                    self.match_label.setPixmap(QPixmap.fromImage(match_qimg).scaled(
-                        self.match_label.width(), self.match_label.height(), Qt.AspectRatioMode.KeepAspectRatio,
-                        Qt.TransformationMode.SmoothTransformation))
-
-                # Update match info
-                info_text = (f"Match: Frame {self.current_frame} → Frame {ref_frame_index}\n"
-                             f"Score: {self.current_match.distance_score:.2f}\n"
-                             f"Features: {self.current_match.features_percentage:.1%}")
-                self.match_info_label.setText(info_text)
-        else:
-            # No match found
-            self.match_info_label.setText("No match found")
-            if mode == "Show Matches":
-                self.view_stack.setCurrentIndex(1)
-                self.descriptor_label.clear()
-                self.descriptor_label.setText("No match to visualize")
-            elif mode == "Show Unmatched Descriptors":
-                self.view_stack.setCurrentIndex(0)
-                self.match_label.clear()
-
-                # Draw all keypoints on current frame since none are matched
-                kp1 = frame_meta.keypoints
-                img_with_all_kp = cv2.drawKeypoints(current_frame_bgr, kp1, None, color=(0, 255, 0),
-                                                    flags=cv2.DRAW_MATCHES_FLAGS_DRAW_RICH_KEYPOINTS)
-                img_with_all_kp_rgb = cv2.cvtColor(img_with_all_kp, cv2.COLOR_BGR2RGB)
-
-                h, w, ch = img_with_all_kp_rgb.shape
-                q_img = QImage(img_with_all_kp_rgb.data, w, h, ch * w, QImage.Format.Format_RGB888)
-                self.current_label.setPixmap(QPixmap.fromImage(q_img).scaled(
-                    self.current_label.width(), self.current_label.height(),
-                    Qt.AspectRatioMode.KeepAspectRatio, Qt.TransformationMode.SmoothTransformation
-                ))
-
-            else:  # Images Only
-                self.view_stack.setCurrentIndex(0)
-                self.match_label.clear()
-                current_qimg = QImage(current_frame_rgb.data, current_frame_rgb.shape[1],
-                                      current_frame_rgb.shape[0],
-                                      current_frame_rgb.strides[0], QImage.Format.Format_RGB888)
-                self.current_label.setPixmap(QPixmap.fromImage(current_qimg).scaled(
-                    self.current_label.width(), self.current_label.height(), Qt.AspectRatioMode.KeepAspectRatio,
-                    Qt.TransformationMode.SmoothTransformation))
+        if mode == "Show Matches":
+            self.view_stack.setCurrentIndex(1)
+            self.descriptor_label.setImage(to_pixmap(img1_data))
+        else: # Images Only and Show Unmatched
+            self.view_stack.setCurrentIndex(0)
+            self.current_label.setImage(to_pixmap(img1_data))
+            self.match_label.setImage(to_pixmap(img2_data))
 
         # Update frame slider
+        self.frame_slider.blockSignals(True)
         self.frame_slider.setValue(self.current_frame)
+        self.frame_slider.blockSignals(False)
+        
+        # Continue playback if active
+        if self.is_playing and self.current_frame < self.total_frames - 1:
+            interval = int(1000 / self.fps) if self.fps > 0 else 33
+            self.playback_timer.start(interval)
+        elif self.is_playing: # Reached end of video
+            self.stop_playback()
+
+    def stop_playback(self):
+        self.is_playing = False
+        self.play_button.setText('▶️')
+        self.playback_timer.stop()
 
     def toggle_playback(self):
         self.is_playing = not self.is_playing
         self.play_button.setText('⏸️' if self.is_playing else '▶️')
         if self.is_playing:
-            interval = int(1000 / self.fps) if self.fps > 0 else 33
-            self.playback_timer.start(interval)
+            self.next_frame_playback() # Kick off the playback loop
         else:
             self.playback_timer.stop()
 
@@ -329,32 +369,38 @@ class MatchVisualizer(QMainWindow):
             self.jump_size = max(1, self.jump_size - 10)
         self.speed_label.setText(f'Skip: {self.jump_size} frames')
 
-    def next_frame(self):
+    def next_frame_playback(self):
         if self.current_frame < self.total_frames - 1:
             self.current_frame += self.jump_size
             self.current_frame = min(self.current_frame, self.total_frames - 1)
             self.update_frames()
 
+    def next_frame_manual(self):
+        self.stop_playback()
+        self.next_frame_playback()
+
     def prev_frame(self):
+        self.stop_playback()
         if self.current_frame > 0:
             self.current_frame -= self.jump_size
             self.current_frame = max(0, self.current_frame)
             self.update_frames()
 
     def set_frame(self, index: int):
+        if self.is_playing:
+            self.stop_playback()
         self.current_frame = index
         self.update_frames()
-
-    def closeEvent(self, event):
-        self.cap.release()
-        if hasattr(self, 'ref_cap') and self.ref_cap is not None:
-            self.ref_cap.release()
-        super().closeEvent(event)
 
     def _on_resize(self, event):
         # Update slider max width to 50% of window width
         self.frame_slider.setMaximumWidth(int(self.width() * 0.5))
         super().resizeEvent(event)
+
+    def closeEvent(self, event):
+        self.thread.quit()
+        self.thread.wait()
+        super().closeEvent(event)
 
 
 def visualize_matches(matcher: FrameMatcher, video_path: str | Path):
