@@ -132,6 +132,22 @@ class FrameMatcher:
 
         return match
 
+    def get_detailed_matches(self, frame_meta1: FrameMetadata, frame_meta2: FrameMetadata, max_matches=50):
+        """
+        Get detailed descriptor matches between two frames.
+        """
+        features1, keypoints1 = frame_meta1.features, frame_meta1.keypoints
+        features2, keypoints2 = frame_meta2.features, frame_meta2.keypoints
+
+        # Use BFMatcher to find the best matches
+        bf = cv2.BFMatcher(cv2.NORM_L2, crossCheck=True)
+        matches = bf.match(features1, features2)
+
+        # Sort them in the order of their distance
+        matches = sorted(matches, key=lambda x: x.distance)
+
+        return keypoints1, keypoints2, matches[:max_matches]
+
     def build_index(self):
         metadata_by_frame_index = self.frame_metadata_by_frame_index
         if not metadata_by_frame_index:
