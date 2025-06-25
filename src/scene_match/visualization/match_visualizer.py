@@ -1,5 +1,6 @@
 import sys
 from pathlib import Path
+from enum import Enum
 
 import cv2
 import numpy as np
@@ -13,9 +14,11 @@ from PyQt6.QtWidgets import (QApplication, QMainWindow, QWidget, QVBoxLayout,
 from scene_match.scene_lib.frame_matcher import FrameMatch, FrameMatcher
 from scene_match.scene_lib.match_types import FrameMetadata
 
-# import numpy as np
-# from ..imaging.reader import get_stream
-# from ..imaging.stream_types import StreamParams
+
+class ViewMode(Enum):
+    IMAGES_ONLY = "Images Only"
+    SHOW_MATCHES = "Show Matches"
+    SHOW_UNMATCHED = "Show Unmatched Descriptors"
 
 
 DARK_STYLESHEET = """
@@ -95,7 +98,7 @@ DARK_STYLESHEET = """
 
 
 class FrameProcessorWorker(QObject):
-    frame_processed = pyqtSignal(int, str, object, object, str)  # frame_idx, mode, img1, img2, info_text
+    frame_processed = pyqtSignal(int, object, object, object, str)  # frame_idx, mode, img1, img2, info_text
     ready = pyqtSignal()
 
     def __init__(self, matcher: FrameMatcher, video_path, video_path_ref):
@@ -112,8 +115,8 @@ class FrameProcessorWorker(QObject):
         self.ref_cap = cv2.VideoCapture(str(self.video_path_ref))
         self.ready.emit()
 
-    @pyqtSlot(int, str, int)
-    def process_frame(self, frame_index, mode, min_size_threshold):
+    @pyqtSlot(int, object, int)
+    def process_frame(self, frame_index, mode: ViewMode, min_size_threshold):
         self.cap.set(cv2.CAP_PROP_POS_FRAMES, frame_index)
         ret, current_frame_bgr = self.cap.read()
         if not ret:
@@ -160,12 +163,12 @@ class FrameProcessorWorker(QObject):
                          f"Features: {current_match.features_percentage:.1%}")
 
             if ret_ref:
-                if mode == "Show Matches":
+                if mode == ViewMode.SHOW_MATCHES:
                     kp1, kp2, matches = self.matcher.get_detailed_matches(frame_meta, ref_frame_meta)
                     img1_data = cv2.drawMatches(
                         current_frame_bgr, kp1, ref_frame_bgr, kp2, matches, None,
                         flags=cv2.DrawMatchesFlags_NOT_DRAW_SINGLE_POINTS)
-                elif mode == "Show Unmatched Descriptors":
+                elif mode == ViewMode.SHOW_UNMATCHED:
                     kp1, kp2, matches = self.matcher.get_detailed_matches(frame_meta, ref_frame_meta)
                     matched_kp1_indices = {m.queryIdx for m in matches}
                     unmatched_kp1 = [kp for i, kp in enumerate(kp1) if i not in matched_kp1_indices]
@@ -176,7 +179,7 @@ class FrameProcessorWorker(QObject):
                     img1_data = current_frame_bgr
                     img2_data = ref_frame_bgr
         else:  # No match
-            if mode == "Show Unmatched Descriptors":
+            if mode == ViewMode.SHOW_UNMATCHED:
                 # Show keypoints from the filtered set
                 kp1 = frame_meta.keypoints
                 img1_data = cv2.drawKeypoints(current_frame_bgr, kp1, None, color=(0, 255, 0),
@@ -189,7 +192,7 @@ class FrameProcessorWorker(QObject):
 
 class ZoomableGraphicsView(QGraphicsView):
     viewChanged = pyqtSignal(float, object)  # zoom factor, center scene pos
-    
+
     def __init__(self, parent=None):
         super().__init__(parent)
         self._scene = QGraphicsScene(self)
@@ -292,13 +295,13 @@ class ZoomableGraphicsView(QGraphicsView):
 
 
 class MatchVisualizer(QMainWindow):
-    request_frame = pyqtSignal(int, str, int)
+    request_frame = pyqtSignal(int, object, int)
 
     def __init__(self, matcher: FrameMatcher, video_path: str | Path):
         super().__init__()
         self.matcher = matcher
         self.video_path = Path(video_path).resolve().absolute()
-        self.jump_size = 1  # Default playback speed
+        self.jump_size = 10  # Default playback speed
         self.sync_enabled = True  # Sync is on by default
         self._sync_connections = []
 
@@ -473,6 +476,13 @@ class MatchVisualizer(QMainWindow):
         controls_layout.addWidget(self.sync_checkbox)
         # --- End sync checkbox ---
 
+        # --- Rotate Reference checkbox ---
+        self.rotate_checkbox = QCheckBox("Rotate Reference")
+        self.rotate_checkbox.setToolTip("Rotate reference image to match (T)")
+        self.rotate_checkbox.toggled.connect(self.update_frames)
+        controls_layout.addWidget(self.rotate_checkbox)
+        # --- End rotate reference checkbox ---
+
         self.prev_button = QPushButton('⏮️')
         self.prev_button.setToolTip('Previous Frame (Shortcut: ,)')
         self.prev_button.setFixedSize(48, 48)
@@ -513,18 +523,21 @@ class MatchVisualizer(QMainWindow):
         self.view_action_group.setExclusive(True)
         self.view_action_group.triggered.connect(self._on_view_mode_changed)
 
-        action_images = QAction("Images Only", self)
+        action_images = QAction(ViewMode.IMAGES_ONLY.value, self)
+        action_images.setData(ViewMode.IMAGES_ONLY)
         action_images.setCheckable(True)
         action_images.setChecked(True)
         view_menu.addAction(action_images)
         self.view_action_group.addAction(action_images)
 
-        action_matches = QAction("Show Matches", self)
+        action_matches = QAction(ViewMode.SHOW_MATCHES.value, self)
+        action_matches.setData(ViewMode.SHOW_MATCHES)
         action_matches.setCheckable(True)
         view_menu.addAction(action_matches)
         self.view_action_group.addAction(action_matches)
 
-        action_unmatched = QAction("Show Unmatched Descriptors", self)
+        action_unmatched = QAction(ViewMode.SHOW_UNMATCHED.value, self)
+        action_unmatched.setData(ViewMode.SHOW_UNMATCHED)
         action_unmatched.setCheckable(True)
         view_menu.addAction(action_unmatched)
         self.view_action_group.addAction(action_unmatched)
@@ -570,11 +583,11 @@ class MatchVisualizer(QMainWindow):
         # Disconnect first to avoid duplicates
         try:
             self.current_label.viewChanged.disconnect(self.match_label.sync_view)
-        except TypeError: # This exception is raised if not connected
+        except TypeError:  # This exception is raised if not connected
             pass
         try:
             self.match_label.viewChanged.disconnect(self.current_label.sync_view)
-        except TypeError: # This exception is raised if not connected
+        except TypeError:  # This exception is raised if not connected
             pass
         if self.sync_enabled:
             self.current_label.viewChanged.connect(self.match_label.sync_view)
@@ -596,7 +609,7 @@ class MatchVisualizer(QMainWindow):
 
     def _on_descriptor_size_change(self, value):
         self.descriptor_size_label.setText(f"{value}")
-        
+
         was_playing = self.is_playing
         if was_playing:
             self.stop_playback()
@@ -605,7 +618,7 @@ class MatchVisualizer(QMainWindow):
 
         if was_playing:
             self.start_playback()
-            
+
     def start_playback(self):
         self.is_playing = True
         self.play_button.setText('⏸️')
@@ -614,27 +627,25 @@ class MatchVisualizer(QMainWindow):
     def get_current_view_mode(self):
         checked_action = self.view_action_group.checkedAction()
         if checked_action:
-            return checked_action.text()
-        return "Images Only"  # Default
+            return checked_action.data()
+        return ViewMode.IMAGES_ONLY  # Default
 
     def update_frames(self):
         mode = self.get_current_view_mode()
         min_size = self.descriptor_size_slider.value()
         # Show/hide descriptor slider based on mode
-        if mode == "Show Unmatched Descriptors":
+        if mode == ViewMode.SHOW_UNMATCHED:
             self.descriptor_size_container.show()
         else:
             self.descriptor_size_container.hide()
         self.request_frame.emit(self.current_frame, mode, min_size)
 
-    @pyqtSlot(int, str, object, object, str)
-    def update_ui_from_worker(self, frame_index, mode, img1_data, img2_data, info_text):
+    @pyqtSlot(int, object, object, object, str)
+    def update_ui_from_worker(self, frame_index, mode: ViewMode, img1_data, img2_data, info_text):
         # Format match info as a single line
         if info_text and 'Match:' in info_text:
-            # Parse the multiline info_text
             lines = info_text.splitlines()
             if len(lines) >= 3:
-                # e.g. Match: Frame 1 → Frame 2\nScore: 0.87\nFeatures: 45.0%
                 match_part = lines[0].replace('Match: ', '').replace('Frame ', '').replace('→ Frame ', '→')
                 score_part = lines[1].replace('Score: ', '')
                 features_part = lines[2].replace('Features: ', '')
@@ -653,13 +664,32 @@ class MatchVisualizer(QMainWindow):
             q_img = QImage(rgb_image.data, w, h, bytes_per_line, QImage.Format.Format_RGB888)
             return QPixmap.fromImage(q_img)
 
-        if mode == "Show Matches":
+        # --- Rotation logic ---
+        rotate_ref = hasattr(self, 'rotate_checkbox') and self.rotate_checkbox.isChecked()
+        rotated_img2 = img2_data
+        if rotate_ref and img2_data is not None:
+            # Try to get keypoints and matches
+            try:
+                # Get the matcher and frame metadata
+                frame_meta = self.worker.matcher.save_frame_features(img1_data, frame_index)
+                current_match = self.worker.matcher.match(frame_meta)
+                if current_match:
+                    ref_frame_meta = current_match.frame_reference
+                    kp1, kp2, matches = self.worker.matcher.get_detailed_matches(frame_meta, ref_frame_meta)
+                    rotated_img2 = rotate_image_to_match(img2_data, kp1, kp2, matches)
+            except Exception as e:
+                rotated_img2 = img2_data
+        else:
+            rotated_img2 = img2_data
+        # --- End rotation logic ---
+
+        if mode == ViewMode.SHOW_MATCHES:
             self.view_stack.setCurrentIndex(1)
             self.descriptor_label.setImage(to_pixmap(img1_data))
         else:  # Images Only and Show Unmatched
             self.view_stack.setCurrentIndex(0)
             self.current_label.setImage(to_pixmap(img1_data))
-            self.match_label.setImage(to_pixmap(img2_data))
+            self.match_label.setImage(to_pixmap(rotated_img2))
 
         # Update frame slider
         self.frame_slider.blockSignals(True)
@@ -685,12 +715,13 @@ class MatchVisualizer(QMainWindow):
             self.start_playback()
 
     def faster_speed(self):
-        self.jump_size += 1
+        self.jump_size += 10
         self.status_speed.setText(f'Speed: {self.jump_size}x')
 
     def slower_speed(self):
         if self.jump_size > 1:
-            self.jump_size -= 1
+            self.jump_size -= 10
+            self.jump_size = max(1, self.jump_size)
         self.status_speed.setText(f'Speed: {self.jump_size}x')
 
     def next_frame_playback(self):
@@ -754,6 +785,12 @@ class MatchVisualizer(QMainWindow):
         elif key == Qt.Key.Key_S:
             self.sync_checkbox.toggle()
             self.show_status_message("Toggle Sync (S)")
+        elif key == Qt.Key.Key_T:
+            self.rotate_checkbox.toggle()
+            # The toggled signal connection will handle the update
+            # and we add feedback here
+            state = "On" if self.rotate_checkbox.isChecked() else "Off"
+            self.show_status_message(f"Rotation: {state} (T)")
         else:
             super().keyPressEvent(event)
 
@@ -773,6 +810,33 @@ class MatchVisualizer(QMainWindow):
             next_action = actions[next_idx]
         next_action.setChecked(True)
         self.update_frames()
+
+
+# TODO: Move to matcher or a utility module
+def rotate_image_to_match(ref_img, kp1, kp2, matches):
+    """
+    Estimate rotation between matched keypoints and rotate the reference image to align with the comparison image.
+    Only rotation (no scale/translation) is applied for simplicity.
+    """
+    if not matches or len(matches) < 3:
+        return ref_img  # Not enough matches to estimate rotation
+
+    # Get matched keypoints
+    pts1 = np.float32([kp1[m.queryIdx].pt for m in matches])
+    pts2 = np.float32([kp2[m.trainIdx].pt for m in matches])
+
+    # Estimate affine transform (rotation + translation)
+    matrix, inliers = cv2.estimateAffinePartial2D(pts2, pts1, method=cv2.RANSAC)
+    if matrix is None:
+        return ref_img
+    # Extract rotation angle
+    angle = np.arctan2(matrix[1, 0], matrix[0, 0]) * 180 / np.pi
+    # Center of the image
+    h, w = ref_img.shape[:2]
+    center = (w // 2, h // 2)
+    rot_mat = cv2.getRotationMatrix2D(center, angle, 1.0)
+    rotated = cv2.warpAffine(ref_img, rot_mat, (w, h), flags=cv2.INTER_LINEAR, borderMode=cv2.BORDER_REPLICATE)
+    return rotated
 
 
 def visualize_matches(matcher: FrameMatcher, video_path: str | Path):
@@ -806,4 +870,3 @@ if __name__ == '__main__':
     matcher = FrameMatcher.deserialize(args.matcher)
     visualize_matches(matcher, args.video)
     sys.exit(app.exec())
-
