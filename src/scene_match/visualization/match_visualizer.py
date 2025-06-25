@@ -5,7 +5,7 @@ import cv2
 from PyQt6.QtCore import Qt, QTimer
 from PyQt6.QtGui import QImage, QPixmap
 from PyQt6.QtWidgets import (QApplication, QMainWindow, QWidget, QVBoxLayout,
-                            QHBoxLayout, QPushButton, QLabel, QSlider, QFileDialog)
+                            QHBoxLayout, QPushButton, QLabel, QSlider, QFileDialog, QSizePolicy)
 
 from scene_match.scene_lib.frame_matcher import FrameMatch, FrameMatcher
 # import numpy as np
@@ -18,7 +18,7 @@ class MatchVisualizer(QMainWindow):
         super().__init__()
         self.matcher = matcher
         self.video_path = Path(video_path).resolve().absolute()
-
+        self.jump_size = 40
 
         self.video_path_ref = Path(matcher.video_source).resolve().absolute()
 
@@ -50,64 +50,90 @@ class MatchVisualizer(QMainWindow):
         self.setCentralWidget(central_widget)
         layout = QVBoxLayout(central_widget)
 
-        # Create image display area
-        display_layout = QHBoxLayout()
-        
-        # Current frame display
-        self.current_label = QLabel()
-        self.current_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        display_layout.addWidget(self.current_label)
-
-        # Match frame display
-        self.match_label = QLabel()
-        self.match_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        display_layout.addWidget(self.match_label)
-
-        layout.addLayout(display_layout)
-
-        # Create controls
-        controls_layout = QHBoxLayout()
-
-        # Playback controls
-        self.play_button = QPushButton('Play')
-        self.play_button.clicked.connect(self.toggle_playback)
-        controls_layout.addWidget(self.play_button)
-
-        self.prev_button = QPushButton('Previous')
-        self.prev_button.clicked.connect(self.prev_frame)
-        controls_layout.addWidget(self.prev_button)
-
-        self.next_button = QPushButton('Next')
-        self.next_button.clicked.connect(self.next_frame)
-        controls_layout.addWidget(self.next_button)
-
-        # Speed control
-        self.speed_slider = QSlider(Qt.Orientation.Horizontal)
-        self.speed_slider.setMinimum(1)
-        self.speed_slider.setMaximum(30)
-        self.speed_slider.setValue(1)
-        self.speed_slider.valueChanged.connect(self.change_speed)
-        controls_layout.addWidget(QLabel('Speed:'))
-        controls_layout.addWidget(self.speed_slider)
-
-        # Frame slider
+        # Frame slider (above controls)
+        slider_layout = QHBoxLayout()
+        slider_layout.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        slider_layout.setSpacing(0)
         self.frame_slider = QSlider(Qt.Orientation.Horizontal)
         self.frame_slider.setMinimum(0)
         self.frame_slider.setMaximum(self.total_frames - 1)
         self.frame_slider.valueChanged.connect(self.set_frame)
-        controls_layout.addWidget(QLabel('Frame:'))
-        controls_layout.addWidget(self.frame_slider)
+        # Set min width to total button width (5*48 + 1*64 = 304), max width to 50% of window
+        self.frame_slider.setMinimumWidth(304)
+        self.frame_slider.setMaximumWidth(int(self.width() * 0.5))
+        self.frame_slider.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+        slider_layout.addWidget(self.frame_slider)
+        layout.addLayout(slider_layout)
 
-        # Match info label
-        self.match_info_label = QLabel()
-        self.match_info_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        controls_layout.addWidget(self.match_info_label)
+        # Images display area (dynamic size, thin gap)
+        display_layout = QHBoxLayout()
+        display_layout.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        display_layout.setSpacing(2)  # Very thin gap
+
+        self.current_label = QLabel()
+        self.current_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.current_label.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
+        display_layout.addWidget(self.current_label)
+
+        self.match_label = QLabel()
+        self.match_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.match_label.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
+        display_layout.addWidget(self.match_label)
+
+        layout.insertLayout(0, display_layout)
+
+        # Controls (below slider)
+        controls_layout = QHBoxLayout()
+        controls_layout.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        controls_layout.setSpacing(20)
+
+        self.prev_button = QPushButton('⏮️')
+        self.prev_button.setToolTip('Previous Frame')
+        self.prev_button.setFixedSize(48, 48)
+        self.prev_button.clicked.connect(self.prev_frame)
+        controls_layout.addWidget(self.prev_button)
+
+        self.slower_button = QPushButton('⏪')
+        self.slower_button.setToolTip('Slower')
+        self.slower_button.setFixedSize(48, 48)
+        self.slower_button.clicked.connect(self.slower_speed)
+        controls_layout.addWidget(self.slower_button)
+
+        self.play_button = QPushButton('▶️')
+        self.play_button.setToolTip('Play/Pause')
+        self.play_button.setFixedSize(64, 64)
+        self.play_button.clicked.connect(self.toggle_playback)
+        controls_layout.addWidget(self.play_button)
+
+        self.faster_button = QPushButton('⏩')
+        self.faster_button.setToolTip('Faster')
+        self.faster_button.setFixedSize(48, 48)
+        self.faster_button.clicked.connect(self.faster_speed)
+        controls_layout.addWidget(self.faster_button)
+
+        self.next_button = QPushButton('⏭️')
+        self.next_button.setToolTip('Next Frame')
+        self.next_button.setFixedSize(48, 48)
+        self.next_button.clicked.connect(self.next_frame)
+        controls_layout.addWidget(self.next_button)
+
+        self.speed_label = QLabel(f'Speed: {self.playback_speed}x')
+        self.speed_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        controls_layout.addWidget(self.speed_label)
 
         layout.addLayout(controls_layout)
+
+        # Match info label (below controls, centered)
+        self.match_info_label = QLabel()
+        self.match_info_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        layout.addWidget(self.match_info_label)
 
         # Setup playback timer
         self.playback_timer = QTimer()
         self.playback_timer.timeout.connect(self.next_frame)
+
+        # Update slider max width on resize
+        self.resizeEvent = self._on_resize
 
     def update_frames(self):
         # Get current frame
@@ -120,8 +146,9 @@ class MatchVisualizer(QMainWindow):
         current_frame = cv2.cvtColor(current_frame, cv2.COLOR_BGR2RGB)
         current_qimg = QImage(current_frame.data, current_frame.shape[1], current_frame.shape[0],
                             current_frame.strides[0], QImage.Format.Format_RGB888)
+        # Dynamically fill width, keep aspect ratio
         self.current_label.setPixmap(QPixmap.fromImage(current_qimg).scaled(
-            self.current_label.size(), Qt.AspectRatioMode.KeepAspectRatio))
+            self.current_label.width(), self.current_label.height(), Qt.AspectRatioMode.KeepAspectRatio, Qt.TransformationMode.SmoothTransformation))
 
         # Get match for current frame
         frame_meta = self.matcher.save_frame_features(current_frame, self.current_frame)
@@ -144,8 +171,7 @@ class MatchVisualizer(QMainWindow):
                 match_qimg = QImage(match_frame.data, match_frame.shape[1], match_frame.shape[0],
                                   match_frame.strides[0], QImage.Format.Format_RGB888)
                 self.match_label.setPixmap(QPixmap.fromImage(match_qimg).scaled(
-                    self.match_label.size(), Qt.AspectRatioMode.KeepAspectRatio))
-                
+                    self.match_label.width(), self.match_label.height(), Qt.AspectRatioMode.KeepAspectRatio, Qt.TransformationMode.SmoothTransformation))
                 # Update match info
                 info_text = (f"Match: Frame {self.current_frame} → Frame {ref_frame_index}\n"
                            f"Score: {self.current_match.distance_score:.2f}\n"
@@ -160,15 +186,35 @@ class MatchVisualizer(QMainWindow):
 
     def toggle_playback(self):
         self.is_playing = not self.is_playing
-        self.play_button.setText('Pause' if self.is_playing else 'Play')
+        self.play_button.setText('⏸️' if self.is_playing else '▶️')
         if self.is_playing:
             self.playback_timer.start(1000 // self.playback_speed)
         else:
             self.playback_timer.stop()
 
+    def faster_speed(self):
+        if self.playback_speed < 30:
+            self.playback_speed += 1
+            self.speed_label.setText(f'Speed: {self.playback_speed}x')
+            if self.is_playing:
+                self.playback_timer.setInterval(1000 // self.playback_speed)
+
+    def slower_speed(self):
+        if self.playback_speed > 1:
+            self.playback_speed -= 1
+            self.speed_label.setText(f'Speed: {self.playback_speed}x')
+            if self.is_playing:
+                self.playback_timer.setInterval(1000 // self.playback_speed)
+
+    def change_speed(self, speed: int):
+        self.playback_speed = speed
+        self.speed_label.setText(f'Speed: {self.playback_speed}x')
+        if self.is_playing:
+            self.playback_timer.setInterval(1000 // speed)
+
     def next_frame(self):
         if self.current_frame < self.total_frames - 1:
-            self.current_frame += 1
+            self.current_frame += self.jump_size
             self.update_frames()
 
     def prev_frame(self):
@@ -180,16 +226,16 @@ class MatchVisualizer(QMainWindow):
         self.current_frame = index
         self.update_frames()
 
-    def change_speed(self, speed: int):
-        self.playback_speed = speed
-        if self.is_playing:
-            self.playback_timer.setInterval(1000 // speed)
-
     def closeEvent(self, event):
         self.cap.release()
         if hasattr(self, 'ref_cap') and self.ref_cap is not None:
             self.ref_cap.release()
         super().closeEvent(event)
+
+    def _on_resize(self, event):
+        # Update slider max width to 50% of window width
+        self.frame_slider.setMaximumWidth(int(self.width() * 0.5))
+        super().resizeEvent(event)
 
 
 def visualize_matches(matcher: FrameMatcher, video_path: str | Path):
