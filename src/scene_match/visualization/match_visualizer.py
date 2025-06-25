@@ -3,7 +3,7 @@ from pathlib import Path
 
 import cv2
 import numpy as np
-from PyQt6.QtCore import Qt, QTimer, QObject, QThread, pyqtSignal, pyqtSlot
+from PyQt6.QtCore import Qt, QTimer, QObject, QThread, pyqtSignal, pyqtSlot, QPointF
 from PyQt6.QtGui import QImage, QPixmap, QAction, QActionGroup
 from PyQt6.QtWidgets import (QApplication, QMainWindow, QWidget, QVBoxLayout,
                              QHBoxLayout, QPushButton, QLabel, QSlider, QFileDialog, QSizePolicy, QCheckBox,
@@ -188,6 +188,8 @@ class FrameProcessorWorker(QObject):
 
 
 class ZoomableGraphicsView(QGraphicsView):
+    viewChanged = pyqtSignal(float, object)  # zoom factor, center scene pos
+    
     def __init__(self, parent=None):
         super().__init__(parent)
         self._scene = QGraphicsScene(self)
@@ -199,6 +201,10 @@ class ZoomableGraphicsView(QGraphicsView):
         self.setDragMode(QGraphicsView.DragMode.ScrollHandDrag)
         self._pixmap_item = None
         self._has_been_fitted = False
+        self._syncing = False  # Prevent feedback loop
+        self._zoom = 1.0
+        self._last_mouse_pos = None
+        self._dragging = False
 
     def setImage(self, pixmap: QPixmap):
         if pixmap.isNull():
@@ -226,21 +232,59 @@ class ZoomableGraphicsView(QGraphicsView):
     def wheelEvent(self, event):
         zoom_in_factor = 1.25
         zoom_out_factor = 1 / zoom_in_factor
-
         old_pos = self.mapToScene(event.position().toPoint())
-
         if event.angleDelta().y() > 0:
-            self.scale(zoom_in_factor, zoom_in_factor)
+            factor = zoom_in_factor
         else:
-            self.scale(zoom_out_factor, zoom_out_factor)
-
+            factor = zoom_out_factor
+        self.scale(factor, factor)
+        self._zoom *= factor
         new_pos = self.mapToScene(event.position().toPoint())
         delta = new_pos - old_pos
         self.translate(delta.x(), delta.y())
+        if not self._syncing:
+            center = self.mapToScene(self.viewport().rect().center())
+            self.viewChanged.emit(self._zoom, center)
+
+    def mousePressEvent(self, event):
+        if event.button() == Qt.MouseButton.LeftButton:
+            self._last_mouse_pos = event.pos()
+            self._dragging = True
+        super().mousePressEvent(event)
+
+    def mouseMoveEvent(self, event):
+        if self._dragging and self._last_mouse_pos is not None:
+            delta = event.pos() - self._last_mouse_pos
+            self._last_mouse_pos = event.pos()
+            self.horizontalScrollBar().setValue(self.horizontalScrollBar().value() - delta.x())
+            self.verticalScrollBar().setValue(self.verticalScrollBar().value() - delta.y())
+        super().mouseMoveEvent(event)
+
+    def mouseReleaseEvent(self, event):
+        if event.button() == Qt.MouseButton.LeftButton and self._dragging:
+            self._dragging = False
+            if not self._syncing:
+                center = self.mapToScene(self.viewport().rect().center())
+                self.viewChanged.emit(self._zoom, center)
+        super().mouseReleaseEvent(event)
+
+    @pyqtSlot(float, object)
+    def sync_view(self, zoom, center_scene_pos):
+        self._syncing = True
+        # Reset transform and set zoom
+        self.resetTransform()
+        self._zoom = zoom
+        self.scale(zoom, zoom)
+        self.centerOn(center_scene_pos)
+        self._syncing = False
 
     def mouseDoubleClickEvent(self, event):
         if self._pixmap_item:
             self.fitInView(self._scene.sceneRect(), Qt.AspectRatioMode.KeepAspectRatio)
+            self._zoom = 1.0
+            if not self._syncing:
+                center = self.mapToScene(self.viewport().rect().center())
+                self.viewChanged.emit(self._zoom, center)
         super().mouseDoubleClickEvent(event)
 
 
@@ -252,6 +296,8 @@ class MatchVisualizer(QMainWindow):
         self.matcher = matcher
         self.video_path = Path(video_path).resolve().absolute()
         self.jump_size = 10
+        self.sync_enabled = True  # Sync is on by default
+        self._sync_connections = []
 
         self.video_path_ref = Path(matcher.video_source).resolve().absolute()
 
@@ -382,6 +428,10 @@ class MatchVisualizer(QMainWindow):
         display_layout.addLayout(reference_video_layout)
         self.view_stack.addWidget(normal_view_widget)
 
+        # --- Zoom sync connections ---
+        self._connect_sync_signals()
+        # --- End zoom sync ---
+
         # Page 2: Descriptor view
         descriptor_view_widget = QWidget()
         descriptor_layout = QHBoxLayout(descriptor_view_widget)
@@ -398,6 +448,13 @@ class MatchVisualizer(QMainWindow):
         controls_layout = QHBoxLayout()
         controls_layout.setAlignment(Qt.AlignmentFlag.AlignCenter)
         controls_layout.setSpacing(20)
+
+        # --- Sync checkbox ---
+        self.sync_checkbox = QCheckBox("Sync Views")
+        self.sync_checkbox.setChecked(True)
+        self.sync_checkbox.stateChanged.connect(self._on_sync_checkbox)
+        controls_layout.addWidget(self.sync_checkbox)
+        # --- End sync checkbox ---
 
         self.prev_button = QPushButton('⏮️')
         self.prev_button.setToolTip('Previous Frame')
@@ -498,6 +555,26 @@ class MatchVisualizer(QMainWindow):
 
         # Update slider max width on resize
         self.resizeEvent = self._on_resize
+
+        self._connect_sync_signals()
+
+    def _connect_sync_signals(self):
+        # Disconnect first to avoid duplicates
+        try:
+            self.current_label.viewChanged.disconnect(self.match_label.sync_view)
+        except Exception:
+            pass
+        try:
+            self.match_label.viewChanged.disconnect(self.current_label.sync_view)
+        except Exception:
+            pass
+        if self.sync_enabled:
+            self.current_label.viewChanged.connect(self.match_label.sync_view)
+            self.match_label.viewChanged.connect(self.current_label.sync_view)
+
+    def _on_sync_checkbox(self, state):
+        self.sync_enabled = bool(state)
+        self._connect_sync_signals()
 
     def _on_descriptor_size_change(self, value):
         self.descriptor_size_label.setText(f"{value}")
@@ -632,6 +709,9 @@ class MatchVisualizer(QMainWindow):
             self.slower_speed()
         elif key == Qt.Key.Key_M:
             self.toggle_view_mode()
+        elif key == Qt.Key.Key_S:
+            new_check_value = not self.sync_checkbox.isChecked()
+            self.sync_checkbox.setChecked(new_check_value)
         else:
             super().keyPressEvent(event)
 
@@ -680,3 +760,4 @@ if __name__ == '__main__':
     matcher = FrameMatcher.deserialize(args.matcher)
     visualize_matches(matcher, args.video)
     sys.exit(app.exec())
+
