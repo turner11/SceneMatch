@@ -8,7 +8,7 @@ from PyQt6.QtGui import QImage, QPixmap, QAction, QActionGroup
 from PyQt6.QtWidgets import (QApplication, QMainWindow, QWidget, QVBoxLayout,
                              QHBoxLayout, QPushButton, QLabel, QSlider, QFileDialog, QSizePolicy, QCheckBox,
                              QStackedLayout, QComboBox, QGraphicsView, QGraphicsScene, QGraphicsPixmapItem,
-                             QMessageBox, QMenu)
+                             QMessageBox, QMenu, QStatusBar)
 
 from scene_match.scene_lib.frame_matcher import FrameMatch, FrameMatcher
 from scene_match.scene_lib.match_types import FrameMetadata
@@ -278,13 +278,16 @@ class ZoomableGraphicsView(QGraphicsView):
         self.centerOn(center_scene_pos)
         self._syncing = False
 
-    def mouseDoubleClickEvent(self, event):
+    def reset_view(self):
         if self._pixmap_item:
             self.fitInView(self._scene.sceneRect(), Qt.AspectRatioMode.KeepAspectRatio)
-            self._zoom = 1.0
+            self._zoom = self.transform().m11()
             if not self._syncing:
                 center = self.mapToScene(self.viewport().rect().center())
                 self.viewChanged.emit(self._zoom, center)
+
+    def mouseDoubleClickEvent(self, event):
+        self.reset_view()
         super().mouseDoubleClickEvent(event)
 
 
@@ -295,7 +298,7 @@ class MatchVisualizer(QMainWindow):
         super().__init__()
         self.matcher = matcher
         self.video_path = Path(video_path).resolve().absolute()
-        self.jump_size = 10
+        self.jump_size = 1  # Default playback speed
         self.sync_enabled = True  # Sync is on by default
         self._sync_connections = []
 
@@ -383,6 +386,7 @@ class MatchVisualizer(QMainWindow):
         central_widget = QWidget()
         self.setCentralWidget(central_widget)
         layout = QVBoxLayout(central_widget)
+        self.setStatusBar(QStatusBar(self))
 
         # Frame slider (above controls)
         slider_layout = QHBoxLayout()
@@ -452,69 +456,68 @@ class MatchVisualizer(QMainWindow):
         # --- Sync checkbox ---
         self.sync_checkbox = QCheckBox("Sync Views")
         self.sync_checkbox.setChecked(True)
+        self.sync_checkbox.setToolTip("Toggle view synchronization (Shortcut: S)")
         self.sync_checkbox.stateChanged.connect(self._on_sync_checkbox)
         controls_layout.addWidget(self.sync_checkbox)
         # --- End sync checkbox ---
 
         self.prev_button = QPushButton('⏮️')
-        self.prev_button.setToolTip('Previous Frame')
+        self.prev_button.setToolTip('Previous Frame (Shortcut: ,)')
         self.prev_button.setFixedSize(48, 48)
         self.prev_button.clicked.connect(self.prev_frame)
         controls_layout.addWidget(self.prev_button)
 
         self.slower_button = QPushButton('⏪')
-        self.slower_button.setToolTip('Slower')
+        self.slower_button.setToolTip('Slower (Shortcut: [)')
         self.slower_button.setFixedSize(48, 48)
         self.slower_button.clicked.connect(self.slower_speed)
         controls_layout.addWidget(self.slower_button)
 
         self.play_button = QPushButton('▶️')
         self.play_button.setObjectName("PlayButton")
-        self.play_button.setToolTip('Play/Pause')
+        self.play_button.setToolTip('Play/Pause (Shortcut: Space)')
         self.play_button.setFixedSize(64, 64)
         self.play_button.clicked.connect(self.toggle_playback)
         controls_layout.addWidget(self.play_button)
 
         self.faster_button = QPushButton('⏩')
-        self.faster_button.setToolTip('Faster')
+        self.faster_button.setToolTip('Faster (Shortcut: ])')
         self.faster_button.setFixedSize(48, 48)
         self.faster_button.clicked.connect(self.faster_speed)
         controls_layout.addWidget(self.faster_button)
 
         self.next_button = QPushButton('⏭️')
-        self.next_button.setToolTip('Next Frame')
+        self.next_button.setToolTip('Next Frame (Shortcut: .)')
         self.next_button.setFixedSize(48, 48)
         self.next_button.clicked.connect(self.next_frame_manual)
         controls_layout.addWidget(self.next_button)
 
-        self.speed_label = QLabel(f'Skip: {self.jump_size} frames')
+        self.speed_label = QLabel(f'Speed: {self.jump_size}x')
         self.speed_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
         controls_layout.addWidget(self.speed_label)
 
         # View Mode Dropdown Button
         self.view_mode_button = QPushButton("👁️ View")
-        self.view_mode_button.setToolTip("Change Visualization Mode")
+        self.view_mode_button.setToolTip("Change Visualization Mode (Shortcut: M)")
 
         view_menu = QMenu(self)
         self.view_action_group = QActionGroup(self)
         self.view_action_group.setExclusive(True)
+        self.view_action_group.triggered.connect(self._on_view_mode_changed)
 
         action_images = QAction("Images Only", self)
         action_images.setCheckable(True)
         action_images.setChecked(True)
-        action_images.triggered.connect(self.update_frames)
         view_menu.addAction(action_images)
         self.view_action_group.addAction(action_images)
 
         action_matches = QAction("Show Matches", self)
         action_matches.setCheckable(True)
-        action_matches.triggered.connect(self.update_frames)
         view_menu.addAction(action_matches)
         self.view_action_group.addAction(action_matches)
 
         action_unmatched = QAction("Show Unmatched Descriptors", self)
         action_unmatched.setCheckable(True)
-        action_unmatched.triggered.connect(self.update_frames)
         view_menu.addAction(action_unmatched)
         self.view_action_group.addAction(action_unmatched)
 
@@ -562,11 +565,11 @@ class MatchVisualizer(QMainWindow):
         # Disconnect first to avoid duplicates
         try:
             self.current_label.viewChanged.disconnect(self.match_label.sync_view)
-        except Exception:
+        except TypeError: # This exception is raised if not connected
             pass
         try:
             self.match_label.viewChanged.disconnect(self.current_label.sync_view)
-        except Exception:
+        except TypeError: # This exception is raised if not connected
             pass
         if self.sync_enabled:
             self.current_label.viewChanged.connect(self.match_label.sync_view)
@@ -575,6 +578,15 @@ class MatchVisualizer(QMainWindow):
     def _on_sync_checkbox(self, state):
         self.sync_enabled = bool(state)
         self._connect_sync_signals()
+        status = "On" if self.sync_enabled else "Off"
+        self.show_status_message(f"View Sync: {status}")
+
+    def _on_view_mode_changed(self, action):
+        self.update_frames()
+        self.show_status_message(f"View Mode: {action.text()}")
+
+    def show_status_message(self, message, timeout=2000):
+        self.statusBar().showMessage(message, timeout)
 
     def _on_descriptor_size_change(self, value):
         self.descriptor_size_label.setText(f"{value}")
@@ -586,7 +598,7 @@ class MatchVisualizer(QMainWindow):
         self.update_frames()
 
         if was_playing:
-            self.start_playback() # A new method to just start the loop
+            self.start_playback()
             
     def start_playback(self):
         self.is_playing = True
@@ -653,13 +665,13 @@ class MatchVisualizer(QMainWindow):
             self.start_playback()
 
     def faster_speed(self):
-        self.jump_size += 10
-        self.speed_label.setText(f'Skip: {self.jump_size} frames')
+        self.jump_size += 1
+        self.speed_label.setText(f'Speed: {self.jump_size}x')
 
     def slower_speed(self):
         if self.jump_size > 1:
-            self.jump_size = max(1, self.jump_size - 10)
-        self.speed_label.setText(f'Skip: {self.jump_size} frames')
+            self.jump_size -= 1
+        self.speed_label.setText(f'Speed: {self.jump_size}x')
 
     def next_frame_playback(self):
         if self.current_frame < self.total_frames - 1:
@@ -669,13 +681,14 @@ class MatchVisualizer(QMainWindow):
 
     def next_frame_manual(self):
         self.stop_playback()
-        self.next_frame_playback()
+        if self.current_frame < self.total_frames - 1:
+            self.current_frame += 1
+            self.update_frames()
 
     def prev_frame(self):
         self.stop_playback()
         if self.current_frame > 0:
-            self.current_frame -= self.jump_size
-            self.current_frame = max(0, self.current_frame)
+            self.current_frame -= 1
             self.update_frames()
 
     def set_frame(self, index: int):
@@ -709,23 +722,28 @@ class MatchVisualizer(QMainWindow):
             self.slower_speed()
         elif key == Qt.Key.Key_M:
             self.toggle_view_mode()
+        elif key == Qt.Key.Key_R:
+            self.reset_views()
         elif key == Qt.Key.Key_S:
-            new_check_value = not self.sync_checkbox.isChecked()
-            self.sync_checkbox.setChecked(new_check_value)
+            self.sync_checkbox.toggle()
         else:
             super().keyPressEvent(event)
+
+    def reset_views(self):
+        self.current_label.reset_view()
+        self.show_status_message("Views Reset", 2000)
 
     def toggle_view_mode(self):
         # Cycle through the three view modes
         actions = self.view_action_group.actions()
         checked = self.view_action_group.checkedAction()
         if checked is None:
-            actions[0].setChecked(True)
-            self.update_frames()
-            return
-        idx = actions.index(checked)
-        next_idx = (idx + 1) % len(actions)
-        actions[next_idx].setChecked(True)
+            next_action = actions[0]
+        else:
+            idx = actions.index(checked)
+            next_idx = (idx + 1) % len(actions)
+            next_action = actions[next_idx]
+        next_action.setChecked(True)
         self.update_frames()
 
 
